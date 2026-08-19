@@ -1,0 +1,22 @@
+{
+  "name": "Template 5",
+  "layout": [
+    "HEADER",
+    "GUEST_METADATA",
+    "STATEMENT_TABLE",
+    "STATEMENT_TOTALS",
+    "FOOTER_NOTICE",
+    "SIGNATURES",
+    "HOTEL_CONTACT"
+  ],
+  "style": {
+    "fontFamily": "Courier",
+    "primaryColor": "#0d47a1",
+    "accentColor": "#0d47a1",
+    "backgroundColor": "#FFFFFF",
+    "textColor": "#111111",
+    "headerAlignment": "center",
+    "theme": "retro-statement",
+    "watermark": "HR"
+  }
+}

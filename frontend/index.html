@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HotelSoft</title>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script>
+    // Globally disable browser autocomplete suggestions on all input fields
+    (function() {
+      function disableAutofill(input) {
+        if (!input) return;
+        var type = input.getAttribute('type');
+        if (!type || ['text', 'tel', 'email', 'number', 'password', 'url', 'search'].includes(type.toLowerCase())) {
+          if (input.getAttribute('autocomplete') !== 'one-time-code') {
+            input.setAttribute('autocomplete', 'one-time-code');
+          }
+        }
+      }
+
+      // 1. Observe additions and modifications in the DOM
+      var observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+          if (mutation.type === 'childList') {
+            mutation.addedNodes.forEach(function(node) {
+              if (node.nodeType === 1) {
+                if (node.tagName === 'INPUT') {
+                  disableAutofill(node);
+                }
+                var inputs = node.querySelectorAll ? node.querySelectorAll('input') : [];
+                inputs.forEach(disableAutofill);
+              }
+            });
+          } else if (mutation.type === 'attributes' && mutation.target.tagName === 'INPUT') {
+            disableAutofill(mutation.target);
+          }
+        });
+      });
+
+      observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['autocomplete']
+      });
+
+      // 2. Intercept focus/click events to lock autocomplete="one-time-code"
+      document.addEventListener('focusin', function(e) {
+        if (e.target && e.target.tagName === 'INPUT') {
+          disableAutofill(e.target);
+        }
+      }, true);
+
+      document.addEventListener('mousedown', function(e) {
+        if (e.target && e.target.tagName === 'INPUT') {
+          disableAutofill(e.target);
+        }
+      }, true);
+    })();
+  </script>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+
+</html>

@@ -1,0 +1,27 @@
+{
+  "name": "Template 4",
+  "layout": [
+    "BLESSING_HEADER",
+    "TAX_INVOICE_TITLE",
+    "HOTEL_BRANDING",
+    "HOTEL_INFO",
+    "INVOICE_META",
+    "GUEST_DETAILS",
+    "PARTICULARS_TABLE",
+    "TAX_SUMMARY",
+    "AMOUNT_WORDS",
+    "CHECKOUT_NOTICE",
+    "MANAGER_SIGNATURE",
+    "THANKS_FOOTER"
+  ],
+  "style": {
+    "fontFamily": "Helvetica",
+    "primaryColor": "#1a237e",
+    "accentColor": "#d32f2f",
+    "backgroundColor": "#FFF8DC",
+    "textColor": "#1a1a1a",
+    "headerAlignment": "center",
+    "theme": "classic-indian",
+    "watermark": "MH"
+  }
+}

@@ -1,0 +1,35 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Outfit', ui-sans-serif, system-ui, sans-serif;
+  
+  /* Refined Green & Olive Nature Palette */
+  --color-primary: #84A63C;
+  --color-primary-bright: #9BBF42;
+  --color-primary-dark: #5C7A1F;
+  --color-primary-light: #EEF4E0;
+  --color-accent: #6B8C3E;
+  --color-sidebar: #1C2B12;
+  --color-sidebar-hover: #2A3D1E;
+  --color-text-primary: #1A2E05;
+  --color-text-secondary: #4A5E38;
+  --color-text-muted: #7A8A6A;
+  --color-bg: #F5F7F0;
+  --color-card: #FFFFFF;
+  --color-input-bg: #F0F3E8;
+  --color-border: #DDE5D0;
+  --color-border-strong: #C8D4B4;
+  --color-dark-panel: #1C2B12;
+}
+
+@layer base {
+  body {
+    font-family: 'Outfit', sans-serif;
+    background-color: var(--color-bg) !important;
+    color: var(--color-text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+}

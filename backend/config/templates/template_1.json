@@ -1,0 +1,20 @@
+{
+  "name": "Template 1",
+  "layout": [
+    "HEADER",
+    "HOTEL_INFO",
+    "GUEST_INFO",
+    "ROOM_DETAILS",
+    "GST_BREAKUP",
+    "TOTAL_PAYMENT",
+    "FOOTER"
+  ],
+  "style": {
+    "fontFamily": "Inter",
+    "primaryColor": "#84A63C",
+    "backgroundColor": "#ffffff",
+    "textColor": "#1A2E05",
+    "headerAlignment": "left",
+    "theme": "emerald"
+  }
+}
