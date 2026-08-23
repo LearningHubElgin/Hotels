@@ -808,12 +808,27 @@ exports.updateBooking = async (req, res, next) => {
       if (!isNaN(dIn.getTime()) && !isNaN(dOut.getTime())) {
         const diffHours = (dOut - dIn) / (1000 * 60 * 60);
         const nNights = Math.max(1, Math.ceil(diffHours / 24));
-        const rObj = await Room.findByPk(booking.roomId);
-        const nRate = rObj?.pricePerNight ? Number(rObj.pricePerNight) : 500;
-        if (nRate > 0) {
-          singleUpdates.totalAmount = nNights * nRate;
+        if (req.body.totalAmount !== undefined) {
+          singleUpdates.totalAmount = Number(req.body.totalAmount);
         }
       }
+
+      if (req.body.roomId !== undefined && req.body.roomId !== booking.roomId) {
+        const newRoomId = req.body.roomId;
+        const oldRoomId = booking.roomId;
+        const oldRoom = await Room.findOne({ where: { id: oldRoomId, hotelId: req.user.hotelId } });
+        const newRoom = await Room.findOne({ where: { id: newRoomId, hotelId: req.user.hotelId } });
+        if (newRoom) {
+          singleUpdates.roomId = newRoomId;
+          singleUpdates.previousRoomId = oldRoomId;
+          singleUpdates.previousRoomNumber = oldRoom ? oldRoom.roomNumber : null;
+          if (booking.status === 'Active') {
+            if (oldRoom) await oldRoom.update({ status: 'available', guestName: null });
+            await newRoom.update({ status: 'occupied', guestName: booking.guestName });
+          }
+        }
+      }
+
       await booking.update(singleUpdates);
       await logActivity({
         req,
@@ -850,7 +865,8 @@ exports.updateBooking = async (req, res, next) => {
       // Keep only individual room-specific fields for the single booking update
       const individualUpdates = {};
       const individualFields = [
-        'roomId', 'previousRoomId', 'previousRoomNumber', 'previousRoomRate'
+        'roomId', 'previousRoomId', 'previousRoomNumber', 'previousRoomRate',
+        'totalAmount', 'amountPaid', 'discount'
       ];
       individualFields.forEach(field => {
         if (updateData[field] !== undefined) {
@@ -858,8 +874,8 @@ exports.updateBooking = async (req, res, next) => {
         }
       });
 
-      // Distribute totalAmount, amountPaid, discount across the group (skip if performing a room shift)
-      if ((updateData.totalAmount !== undefined || updateData.amountPaid !== undefined || updateData.discount !== undefined || req.body.customRates) && !req.body.previousRoomId) {
+      // Distribute totalAmount, amountPaid, discount across the group (skip if performing a room shift or skipGroupDistribution is passed)
+      if (!req.body.skipGroupDistribution && (updateData.totalAmount !== undefined || updateData.amountPaid !== undefined || updateData.discount !== undefined || req.body.customRates) && !req.body.previousRoomId) {
         const groupBookings = await Booking.findAll({
           where: { groupBookingId: booking.groupBookingId, hotelId: req.user.hotelId },
           include: [{ model: Room }]
@@ -921,13 +937,15 @@ exports.updateBooking = async (req, res, next) => {
           const proportion = calculatedGbTotal / sumOfAllRoomTotals;
           let gbUpdates = {};
 
-          if (calculatedGbTotal > 0) {
+          if (updateData.totalAmount !== undefined) {
+            if (i === groupBookings.length - 1) {
+              gbUpdates.totalAmount = parseFloat((parseFloat(updateData.totalAmount) - accumulatedTotalAmount).toFixed(2));
+            } else {
+              gbUpdates.totalAmount = parseFloat((parseFloat(updateData.totalAmount) * proportion).toFixed(2));
+              accumulatedTotalAmount += gbUpdates.totalAmount;
+            }
+          } else if (calculatedGbTotal > 0) {
             gbUpdates.totalAmount = parseFloat(calculatedGbTotal.toFixed(2));
-            accumulatedTotalAmount += gbUpdates.totalAmount;
-          } else if (i === groupBookings.length - 1 && updateData.totalAmount !== undefined) {
-            gbUpdates.totalAmount = parseFloat((parseFloat(updateData.totalAmount) - accumulatedTotalAmount).toFixed(2));
-          } else if (updateData.totalAmount !== undefined) {
-            gbUpdates.totalAmount = parseFloat((parseFloat(updateData.totalAmount) * proportion).toFixed(2));
             accumulatedTotalAmount += gbUpdates.totalAmount;
           }
 

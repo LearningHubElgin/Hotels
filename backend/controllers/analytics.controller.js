@@ -343,6 +343,7 @@ exports.getBillingSummary = async (req, res, next) => {
 
     let totalRevenue = 0;
     let pendingDues = 0;
+    let totalPayCustomer = 0;
     let otaRevenue = 0;
     let directRevenue = 0;
     let monthlyRevenue = 0;
@@ -431,29 +432,70 @@ exports.getBillingSummary = async (req, res, next) => {
       const assocExtra = allExtraChargesForStats.filter(ec => groupBookingIds.includes(ec.bookingId));
       const extraChargesTotal = assocExtra.reduce((s, ec) => s + parseFloat(ec.grandTotal || 0), 0);
 
-      const roomBase = Math.max(0, totalAmount - discount);
       let bookingSubTotal = 0;
       let bookingGst = 0;
       let grandTotal = 0;
 
-      if (gstOption === 'exclusive') {
-        bookingSubTotal = roomBase;
-        bookingGst = gstRate > 0 ? Math.round((bookingSubTotal * (gstRate / 100)) * 100) / 100 : 0;
-        grandTotal = bookingSubTotal + bookingGst + extraChargesTotal;
-      } else if (gstOption === 'inclusive') {
-        let roomGrand = roomBase;
-        if (amount > roomGrand && Math.abs(amount - Math.round(roomGrand * (1 + gstRate / 100))) < 1.5) {
-          roomGrand = amount;
-        }
-        grandTotal = roomGrand + extraChargesTotal;
-        bookingSubTotal = gstRate > 0 ? Math.round((roomGrand / (1 + gstRate / 100)) * 100) / 100 : roomGrand;
-        bookingGst = Math.round((roomGrand - bookingSubTotal) * 100) / 100;
+      if (b.groupBookingId) {
+        const groupItems = allBookingsForStats.filter(gb => gb.groupBookingId === b.groupBookingId);
+        let groupGrandRooms = 0;
+        let groupSubRooms = 0;
+        let groupGstRooms = 0;
+
+        groupItems.forEach(item => {
+          const itemAmt = parseFloat(item.amountPaid) || 0;
+          const itemTot = parseFloat(item.totalAmount) || 0;
+          const itemDisc = parseFloat(item.discount) || 0;
+          const itemBase = Math.max(0, itemTot - itemDisc);
+
+          if (gstOption === 'exclusive') {
+            const rGst = gstRate > 0 ? Math.round((itemBase * (gstRate / 100)) * 100) / 100 : 0;
+            groupSubRooms += itemBase;
+            groupGstRooms += rGst;
+            groupGrandRooms += (itemBase + rGst);
+          } else if (gstOption === 'inclusive') {
+            let rGrand = itemBase;
+            if (itemAmt > rGrand && Math.abs(itemAmt - Math.round(rGrand * (1 + gstRate / 100))) < 1.5) {
+              rGrand = itemAmt;
+            }
+            const rSub = gstRate > 0 ? Math.round((rGrand / (1 + gstRate / 100)) * 100) / 100 : rGrand;
+            const rGst = Math.round((rGrand - rSub) * 100) / 100;
+            groupSubRooms += rSub;
+            groupGstRooms += rGst;
+            groupGrandRooms += rGrand;
+          } else {
+            groupSubRooms += itemBase;
+            groupGrandRooms += itemBase;
+          }
+        });
+
+        bookingSubTotal = groupSubRooms;
+        bookingGst = groupGstRooms;
+        grandTotal = groupGrandRooms + extraChargesTotal;
       } else {
-        bookingSubTotal = roomBase;
-        bookingGst = 0;
-        grandTotal = roomBase + extraChargesTotal;
+        const roomBase = Math.max(0, totalAmount - discount);
+        if (gstOption === 'exclusive') {
+          bookingSubTotal = roomBase;
+          bookingGst = gstRate > 0 ? Math.round((bookingSubTotal * (gstRate / 100)) * 100) / 100 : 0;
+          grandTotal = bookingSubTotal + bookingGst + extraChargesTotal;
+        } else if (gstOption === 'inclusive') {
+          let roomGrand = roomBase;
+          if (amount > roomGrand && Math.abs(amount - Math.round(roomGrand * (1 + gstRate / 100))) < 1.5) {
+            roomGrand = amount;
+          }
+          grandTotal = roomGrand + extraChargesTotal;
+          bookingSubTotal = gstRate > 0 ? Math.round((roomGrand / (1 + gstRate / 100)) * 100) / 100 : roomGrand;
+          bookingGst = Math.round((roomGrand - bookingSubTotal) * 100) / 100;
+        } else {
+          bookingSubTotal = roomBase;
+          bookingGst = 0;
+          grandTotal = roomBase + extraChargesTotal;
+        }
       }
 
+      if (amount > grandTotal + 0.1) {
+        totalPayCustomer += (amount - grandTotal);
+      }
       const bookingPending = Math.max(0, grandTotal - amount);
       pendingDues += bookingPending;
 
@@ -573,7 +615,7 @@ exports.getBillingSummary = async (req, res, next) => {
 
       let rows = [];
 
-      if (paymentStatus === 'paid' || paymentStatus === 'pending') {
+      if (paymentStatus === 'paid' || paymentStatus === 'pending' || paymentStatus === 'pay_customer') {
         const allCandidates = await Booking.findAll({
           where: paginatedWhere,
           include: [{ model: Room, attributes: ['roomNumber', 'type', 'pricePerNight'] }],
@@ -594,41 +636,77 @@ exports.getBillingSummary = async (req, res, next) => {
         });
 
         const evaluatedCandidates = await Promise.all(uniqueCandidates.map(async (b) => {
-          let baseAmount = Number(b.totalAmount || 0);
-          let discount = Number(b.discount || 0);
-          let amountPaid = Number(b.amountPaid || 0);
-
-          if (b.groupBookingId) {
-            const gbs = await Booking.findAll({ where: { groupBookingId: b.groupBookingId, hotelId: req.user.hotelId } });
-            baseAmount = gbs.reduce((sum, gb) => sum + Number(gb.totalAmount || 0), 0);
-            discount = gbs.reduce((sum, gb) => sum + Number(gb.discount || 0), 0);
-            amountPaid = gbs.reduce((sum, gb) => sum + Number(gb.amountPaid || 0), 0);
-          }
-
           const gstRate = Number(b.gstRate !== undefined && b.gstRate !== null ? b.gstRate : defaultGstRate);
           const gstOption = b.gstOption || 'none';
-          const subTotal = Math.max(0, baseAmount - discount);
-          const roomGstAmount = gstOption === 'none' ? 0 : Math.round((subTotal * (gstRate / 100)) * 100) / 100;
           const groupBookingIds = b.groupBookingId 
             ? allBookingsForStats.filter(gb => gb.groupBookingId === b.groupBookingId).map(gb => gb.id)
             : [b.id];
           const assocExtra = allExtraChargesForStats.filter(ec => groupBookingIds.includes(ec.bookingId));
           const extraChargesTotal = assocExtra.reduce((s, ec) => s + parseFloat(ec.grandTotal || 0), 0);
 
-          let grandTotal = subTotal + roomGstAmount + extraChargesTotal;
-          if (gstOption === 'inclusive') {
-            grandTotal = subTotal + extraChargesTotal;
+          let grandTotal = 0;
+          let amountPaid = 0;
+
+          if (b.groupBookingId) {
+            const gbs = await Booking.findAll({ where: { groupBookingId: b.groupBookingId, hotelId: req.user.hotelId } });
+            amountPaid = gbs.reduce((sum, gb) => sum + Number(gb.amountPaid || 0), 0);
+            let groupGrandRooms = 0;
+
+            gbs.forEach(item => {
+              const itemAmt = parseFloat(item.amountPaid) || 0;
+              const itemTot = parseFloat(item.totalAmount) || 0;
+              const itemDisc = parseFloat(item.discount) || 0;
+              const itemBase = Math.max(0, itemTot - itemDisc);
+
+              if (gstOption === 'exclusive') {
+                const rGst = gstRate > 0 ? Math.round((itemBase * (gstRate / 100)) * 100) / 100 : 0;
+                groupGrandRooms += (itemBase + rGst);
+              } else if (gstOption === 'inclusive') {
+                let rGrand = itemBase;
+                if (itemAmt > rGrand && Math.abs(itemAmt - Math.round(rGrand * (1 + gstRate / 100))) < 1.5) {
+                  rGrand = itemAmt;
+                }
+                groupGrandRooms += rGrand;
+              } else {
+                groupGrandRooms += itemBase;
+              }
+            });
+
+            grandTotal = groupGrandRooms + extraChargesTotal;
+          } else {
+            amountPaid = Number(b.amountPaid || 0);
+            const baseAmount = Number(b.totalAmount || 0);
+            const discount = Number(b.discount || 0);
+            const roomBase = Math.max(0, baseAmount - discount);
+
+            if (gstOption === 'exclusive') {
+              const rGst = gstRate > 0 ? Math.round((roomBase * (gstRate / 100)) * 100) / 100 : 0;
+              grandTotal = roomBase + rGst + extraChargesTotal;
+            } else if (gstOption === 'inclusive') {
+              let roomGrand = roomBase;
+              if (amountPaid > roomGrand && Math.abs(amountPaid - Math.round(roomGrand * (1 + gstRate / 100))) < 1.5) {
+                roomGrand = amountPaid;
+              }
+              grandTotal = roomGrand + extraChargesTotal;
+            } else {
+              grandTotal = roomBase + extraChargesTotal;
+            }
           }
+
           const pending = grandTotal - amountPaid;
-          const isPaid = pending <= 0.1;
-          return { booking: b, isPaid };
+          const isPayCustomer = pending < -0.1;
+          const isPaid = !isPayCustomer && pending <= 0.1;
+          const isPending = !isPayCustomer && pending > 0.1;
+          return { booking: b, isPaid, isPending, isPayCustomer };
         }));
 
         let filteredCandidates = [];
         if (paymentStatus === 'paid') {
           filteredCandidates = evaluatedCandidates.filter(x => x.isPaid).map(x => x.booking);
         } else if (paymentStatus === 'pending') {
-          filteredCandidates = evaluatedCandidates.filter(x => !x.isPaid).map(x => x.booking);
+          filteredCandidates = evaluatedCandidates.filter(x => x.isPending).map(x => x.booking);
+        } else if (paymentStatus === 'pay_customer') {
+          filteredCandidates = evaluatedCandidates.filter(x => x.isPayCustomer).map(x => x.booking);
         }
 
         totalRecords = filteredCandidates.length;
@@ -776,6 +854,7 @@ exports.getBillingSummary = async (req, res, next) => {
       data: {
         stats: {
           totalRevenue, monthlyRevenue, otaRevenue, pendingDues,
+          totalPayCustomer: Math.round(totalPayCustomer * 100) / 100,
           totalGst: calcTotalGst, monthlyGst, extraMonthlyGst, revenueTrend,
           checkoutRoomGst, notCheckoutRoomGst, checkoutExtraGst, notCheckoutExtraGst,
           totalRoomGst, totalExtraGst, totalCheckoutGst, totalNotCheckoutGst
