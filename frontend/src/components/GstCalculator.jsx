@@ -24,7 +24,8 @@ const GstCalculator = ({
   earlyCheckInCharge = 0,
   onEarlyCheckInChargeChange,
   showCorporateDetails = true,
-  discount = 0
+  discount = 0,
+  discountReason = ''
 }) => {
   return (
     <div className={className}>
@@ -151,15 +152,22 @@ const GstCalculator = ({
               }
 
               return (
-                <div key={idx} className="flex justify-between items-center text-[10px] text-[#7A8A6A]">
-                  <span className="font-semibold text-[#4A5E38] inline-flex items-center gap-1">
-                    Room {room.roomNumber} ({room.type || 'Deluxe'}):
-                    {room.status === 'Completed' && (
-                      <span className="text-[8px] font-bold bg-amber-100 text-amber-800 border border-amber-300 px-1 py-0.2 rounded">
-                        Checked Out
+                <div key={idx} className="flex justify-between items-center text-[10px] text-[#7A8A6A] flex-wrap gap-1">
+                  <div className="flex flex-col">
+                    <span className="font-semibold text-[#4A5E38] inline-flex items-center gap-1">
+                      Room {room.roomNumber} ({room.type || 'Deluxe'}):
+                      {room.status === 'Completed' && (
+                        <span className="text-[8px] font-bold bg-amber-100 text-amber-800 border border-amber-300 px-1 py-0.2 rounded">
+                          Checked Out
+                        </span>
+                      )}
+                    </span>
+                    {room.checkInDate && room.checkOutDate && (
+                      <span className="text-[9px] text-[#5C7A1F] font-bold">
+                        {room.checkInDate.split('T')[0].split('-').reverse().join('-')} to {room.checkOutDate.split('T')[0].split('-').reverse().join('-')}
                       </span>
                     )}
-                  </span>
+                  </div>
                   <div className="flex items-center gap-1 font-extrabold text-[#1A2E05]">
                     <span>₹</span>
                     {onRoomRateChange && !disabled ? (
@@ -217,7 +225,10 @@ const GstCalculator = ({
               <span className="font-black text-[#1A2E05]">₹{(subTotal + Number(discount)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
             <div className="flex justify-between items-center text-xs text-rose-800">
-              <span className="font-black">Discount:</span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-black">Discount:</span>
+                {discountReason && <span className="text-[9.5px] font-bold text-rose-700 bg-rose-50 px-1 py-0.2 rounded border border-rose-200">({discountReason})</span>}
+              </div>
               <span className="font-black">- ₹{Number(discount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
             <div className="flex justify-between items-center text-xs border-t border-dashed border-[#DDE5D0]/60 pt-1">

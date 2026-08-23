@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   DollarSign, TrendingUp, Receipt, Search, Filter, Download,
-  CreditCard, Globe, ArrowUpRight, X, ChevronRight, ChevronLeft, Loader2, Edit, Trash2, Eye, Calendar, Clock, Wallet, CheckCircle, AlertTriangle, RotateCcw,
+  CreditCard, Globe, ArrowUpRight, ArrowDownLeft, X, ChevronRight, ChevronLeft, Loader2, Edit, Trash2, Eye, Calendar, Clock, Wallet, CheckCircle, AlertTriangle, RotateCcw,
   ArrowUp, ArrowDown, ArrowUpDown
 } from 'lucide-react';
 import api from '../../../services/api';
@@ -112,37 +112,86 @@ const calculateBillGSTAndTotals = (bill, activeHotel) => {
   let roomGstAmount = 0;
   let grandTotal = 0;
 
+  let extraGstAmount = 0;
+  let extraSubTotal = extraChargesTotal;
+  let extraGrandTotal = extraChargesTotal;
+
+  if (bill.extraChargesList && Array.isArray(bill.extraChargesList) && bill.extraChargesList.length > 0) {
+    let calculatedExtraSub = 0;
+    let calculatedExtraGst = 0;
+    let calculatedExtraGrand = 0;
+
+    bill.extraChargesList.forEach(ec => {
+      const qtyNum = parseInt(ec.qty) || 1;
+      const priceNum = parseFloat(ec.price) || 0;
+      const itemSubtotal = qtyNum * priceNum;
+      const ecGstOpt = ec.gstOption || 'inclusive';
+      const ecGstRt = Number(ec.gstRate !== undefined && ec.gstRate !== null ? ec.gstRate : 0);
+
+      let itemBase = itemSubtotal;
+      let itemGst = 0;
+      let itemGrand = itemSubtotal;
+
+      if (ec.grandTotal !== undefined && ec.grandTotal !== null && Number(ec.grandTotal) > 0) {
+        itemGrand = Number(ec.grandTotal);
+        if (ecGstOpt === 'inclusive' && ecGstRt > 0) {
+          itemBase = Math.round((itemGrand / (1 + ecGstRt / 100)) * 100) / 100;
+          itemGst = Math.round((itemGrand - itemBase) * 100) / 100;
+        } else if (ecGstOpt === 'exclusive' && ecGstRt > 0) {
+          itemBase = itemSubtotal;
+          itemGst = Math.round((itemGrand - itemBase) * 100) / 100;
+        } else {
+          itemBase = itemGrand;
+          itemGst = 0;
+        }
+      } else {
+        if (ecGstOpt === 'inclusive' && ecGstRt > 0) {
+          itemBase = Math.round((itemSubtotal / (1 + ecGstRt / 100)) * 100) / 100;
+          itemGst = Math.round((itemSubtotal - itemBase) * 100) / 100;
+          itemGrand = itemSubtotal;
+        } else if (ecGstOpt === 'exclusive' && ecGstRt > 0) {
+          itemBase = itemSubtotal;
+          itemGst = Math.round((itemSubtotal * (ecGstRt / 100)) * 100) / 100;
+          itemGrand = itemSubtotal + itemGst;
+        } else {
+          itemBase = itemSubtotal;
+          itemGst = 0;
+          itemGrand = itemSubtotal;
+        }
+      }
+
+      calculatedExtraSub += itemBase;
+      calculatedExtraGst += itemGst;
+      calculatedExtraGrand += itemGrand;
+    });
+
+    extraSubTotal = calculatedExtraSub;
+    extraGstAmount = calculatedExtraGst;
+    extraGrandTotal = calculatedExtraGrand;
+  } else if (extraChargesTotal > 0 && gstOption !== 'none') {
+    extraSubTotal = gstRate > 0 ? Math.round((extraChargesTotal / (1 + gstRate / 100)) * 100) / 100 : extraChargesTotal;
+    extraGstAmount = Math.round((extraChargesTotal - extraSubTotal) * 100) / 100;
+    extraGrandTotal = extraChargesTotal;
+  } else {
+    extraSubTotal = extraChargesTotal;
+    extraGstAmount = 0;
+    extraGrandTotal = extraChargesTotal;
+  }
+
   if (gstOption === 'exclusive') {
     subTotal = netRoomTotal;
     roomGstAmount = gstRate > 0 ? Math.round((subTotal * (gstRate / 100)) * 100) / 100 : 0;
-    grandTotal = subTotal + roomGstAmount + extraChargesTotal;
+    grandTotal = subTotal + roomGstAmount + extraGrandTotal;
     baseAmount = subTotal + discount;
   } else if (gstOption === 'inclusive') {
-    grandTotal = netRoomTotal + extraChargesTotal;
+    grandTotal = netRoomTotal + extraGrandTotal;
     subTotal = gstRate > 0 ? Math.round((netRoomTotal / (1 + gstRate / 100)) * 100) / 100 : netRoomTotal;
     roomGstAmount = Math.round((netRoomTotal - subTotal) * 100) / 100;
     baseAmount = subTotal + discount;
   } else {
     roomGstAmount = 0;
-    grandTotal = netRoomTotal + extraChargesTotal;
+    grandTotal = netRoomTotal + extraGrandTotal;
     subTotal = netRoomTotal;
-  }
-
-  let extraGstAmount = 0;
-  let extraSubTotal = extraChargesTotal;
-  if (bill.extraChargesList && Array.isArray(bill.extraChargesList) && bill.extraChargesList.length > 0) {
-    extraGstAmount = bill.extraChargesList.reduce((s, ec) => s + Number(ec.gstAmount || 0), 0);
-    const extraSubSum = bill.extraChargesList.reduce((s, ec) => s + Number(ec.subtotal || ec.baseAmount || 0), 0);
-    if (extraSubSum > 0) {
-      extraSubTotal = extraSubSum;
-    } else {
-      extraSubTotal = Math.max(0, extraChargesTotal - extraGstAmount);
-    }
-  } else if (extraChargesTotal > 0 && gstOption !== 'none') {
-    extraSubTotal = gstRate > 0 ? (extraChargesTotal / (1 + gstRate / 100)) : extraChargesTotal;
-    extraGstAmount = extraChargesTotal - extraSubTotal;
-  } else {
-    extraSubTotal = extraChargesTotal;
   }
 
   const pending = grandTotal - amountPaid;
@@ -359,6 +408,7 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
         hsnCode: bill.hsnCode || activeHotel?.defaultHsnCode || '996311',
         gstRate: bill.gstRate !== undefined && bill.gstRate !== null ? bill.gstRate : (activeHotel?.defaultGstRate !== undefined ? Number(activeHotel.defaultGstRate) : 12),
         discount: discount,
+        discountReason: bill.discountReason || '',
         paymentMode: bill.paymentMode || 'Cash',
         paymentBank: bill.paymentBank || '',
         invoiceNumber: bill.invoiceNumber
@@ -369,15 +419,35 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
         checkOutTime: bill.checkOutTime || '',
         earlyCheckInCharge: savedEarlyCharge,
         chargePreviousDay: chargePrevDay,
-        groupRoomShifts: isGroup ? bill.groupBookings.map(b => {
-          const days = getDays(bill.checkInDate, bill.checkOutDate);
-          const derivedPrice = Number(b.totalAmount) / days;
+        groupRoomShifts: isGroup ? bill.groupBookings.map((b, idx) => {
+          const bCheckIn = b.checkInDate ? b.checkInDate.split('T')[0] : (bill.checkInDate ? bill.checkInDate.split('T')[0] : '');
+          const bCheckOut = b.checkOutDate ? b.checkOutDate.split('T')[0] : (bill.checkOutDate ? bill.checkOutDate.split('T')[0] : '');
+          const bCheckInTime = b.checkInTime || bill.checkInTime || '12:00';
+          const bCheckOutTime = b.checkOutTime || bill.checkOutTime || '11:00';
+          const days = getDays(bCheckIn, bCheckOut);
+
+          const isPrimary = Number(b.id) === Number(bill.id) || idx === 0;
+          const earlyDeduction = isPrimary ? savedEarlyCharge : 0;
+          let bBase = Number(b.totalAmount || 0) - earlyDeduction;
+          const savedGstOpt = bill.gstOption || 'none';
+          const savedGstRt = Number(bill.gstRate || 0);
+          if (savedGstOpt === 'exclusive' && savedGstRt > 0) {
+            bBase = bBase / (1 + savedGstRt / 100);
+          }
+          const derivedPrice = days > 0 ? cleanRate(bBase / days) : cleanRate(bBase);
+
           return {
             bookingId: b.id,
             roomId: b.roomId,
             originalRoomId: b.roomId,
             previousRoomNumber: cleanRoomNumber(b.previousRoomNumber),
             roomNumber: cleanRoomNumber(b.Room?.roomNumber),
+            roomType: b.Room?.type || 'Standard',
+            checkInDate: bCheckIn,
+            checkOutDate: bCheckOut,
+            checkInTime: bCheckInTime,
+            checkOutTime: bCheckOutTime,
+            days: days,
             fallbackPrice: derivedPrice
           };
         }) : []
@@ -446,32 +516,74 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
         shift.bookingId === bookingId ? { ...shift, roomId: newRoomId } : shift
       );
 
-      const days = getDays(prev.checkInDate, prev.checkOutDate);
-      const newTotalAmount = newShifts.reduce((sum, shift) => {
+      let totalSum = 0;
+      newShifts.forEach((shift, idx) => {
+        const customVal = getCustomRate(customRoomRates, { id: shift.bookingId }, idx);
         let price = 0;
-        if (String(shift.roomId) === String(shift.originalRoomId)) {
-          // Room hasn't changed, use its original derived price
+        if (customVal !== null) {
+          price = Number(customVal) || 0;
+        } else if (String(shift.roomId) === String(shift.originalRoomId)) {
           price = shift.fallbackPrice;
         } else {
-          // Room changed, get new price from allRooms
           const room = allRooms.find(r => String(r.id) === String(shift.roomId));
           price = Number(room?.pricePerNight) || shift.fallbackPrice;
         }
-        return sum + ((Number(price) || 0) * days);
-      }, 0);
+        totalSum += (price * (shift.days || 1));
+      });
 
-      const isInc = gstOption === 'inclusive';
-      const rate = Number(formData.gstRate !== undefined ? formData.gstRate : (activeHotel?.defaultGstRate !== undefined ? Number(activeHotel.defaultGstRate) : 12));
-      const calcTotal = newTotalAmount > 0 ? newTotalAmount : prev.totalAmount;
-      const displayVal = isInc
-        ? String(Math.round(Number(calcTotal) * (1 + rate / 100) * 100) / 100)
-        : String(Math.round(Number(calcTotal) * 100) / 100);
+      const displayVal = String(Math.round(totalSum * 100) / 100);
       setTempRoomCharges(displayVal);
 
       return {
         ...prev,
         groupRoomShifts: newShifts,
-        totalAmount: newTotalAmount > 0 ? newTotalAmount : prev.totalAmount
+        totalAmount: totalSum
+      };
+    });
+  };
+
+  const handleGroupRoomDateChange = (bookingId, field, value) => {
+    setFormData(prev => {
+      const newShifts = prev.groupRoomShifts.map(shift => {
+        if (shift.bookingId === bookingId) {
+          const updated = { ...shift, [field]: value };
+          const cIn = field === 'checkInDate' ? value : updated.checkInDate;
+          const cOut = field === 'checkOutDate' ? value : updated.checkOutDate;
+          updated.days = getDays(cIn, cOut);
+          return updated;
+        }
+        return shift;
+      });
+
+      const allCheckIns = newShifts.map(s => s.checkInDate).filter(Boolean);
+      const allCheckOuts = newShifts.map(s => s.checkOutDate).filter(Boolean);
+      const minCheckIn = allCheckIns.length > 0 ? allCheckIns.reduce((min, d) => d < min ? d : min, allCheckIns[0]) : prev.checkInDate;
+      const maxCheckOut = allCheckOuts.length > 0 ? allCheckOuts.reduce((max, d) => d > max ? d : max, allCheckOuts[0]) : prev.checkOutDate;
+
+      let totalSum = 0;
+      newShifts.forEach((shift, idx) => {
+        const customVal = getCustomRate(customRoomRates, { id: shift.bookingId }, idx);
+        let price = 0;
+        if (customVal !== null) {
+          price = Number(customVal) || 0;
+        } else if (String(shift.roomId) === String(shift.originalRoomId)) {
+          price = shift.fallbackPrice;
+        } else {
+          const room = allRooms.find(r => String(r.id) === String(shift.roomId));
+          price = Number(room?.pricePerNight) || shift.fallbackPrice;
+        }
+        totalSum += (price * (shift.days || 1));
+      });
+
+      const displayVal = String(Math.round(totalSum * 100) / 100);
+      setTempRoomCharges(displayVal);
+
+      return {
+        ...prev,
+        checkInDate: minCheckIn,
+        checkOutDate: maxCheckOut,
+        groupRoomShifts: newShifts,
+        totalAmount: totalSum
       };
     });
   };
@@ -579,7 +691,7 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
     ].filter(Boolean);
 
     for (const k of keysToTry) {
-      if (ratesObj[k] !== undefined && ratesObj[k] !== '') {
+      if (ratesObj && ratesObj[k] !== undefined) {
         return ratesObj[k];
       }
     }
@@ -661,26 +773,43 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
           const finalCurRate = curCustom !== null ? (Number(curCustom) || 0) : baseCurRate;
           totalSum += (Number(finalCurRate) || 0) * curDays;
         } else {
-          const customVal = getCustomRate(updatedCustom, b, idx);
-          let currentRate = 0;
-          if (customVal !== null) {
-            currentRate = customVal;
-          } else {
-            const isPrimary = Number(b.id) === Number(bill.id) || Number(b.roomId) === primaryId || idx === 0;
-            const earlyDeduction = isPrimary ? earlyBaseDeduction : 0;
-            const bBase = Number(b.totalAmount || 0) - earlyDeduction;
-            const rawRate = diffDays > 0 ? (bBase / diffDays) : bBase;
-            currentRate = cleanRate(rawRate);
-          }
+          const shiftObj = isGroup ? formData.groupRoomShifts?.find(s => s.bookingId === b.id) : null;
+          const bStartStr = shiftObj?.checkInDate ? shiftObj.checkInDate : (b.checkInDate ? b.checkInDate.split('T')[0] : startStr);
+          const bEndStr = shiftObj?.checkOutDate ? shiftObj.checkOutDate : (b.checkOutDate ? b.checkOutDate.split('T')[0] : endStr);
           let bRoomDays = diffDays;
-          if (b.status === 'Completed' && b.checkInDate && b.checkOutDate) {
-            const bStart = new Date(b.checkInDate.split('T')[0]);
-            const bEnd = new Date(b.checkOutDate.split('T')[0]);
-            const daysDiff = Math.max(1, Math.ceil(Math.abs(bEnd - bStart) / (1000 * 60 * 60 * 24)));
+          if (bStartStr && bEndStr) {
+            const daysDiff = Math.max(1, Math.ceil(Math.abs(new Date(bEndStr) - new Date(bStartStr)) / (1000 * 60 * 60 * 24)));
             if (!isNaN(daysDiff)) {
               bRoomDays = daysDiff;
             }
           }
+
+          const customVal = getCustomRate(updatedCustom, b, idx);
+          let currentRate = 0;
+          if (customVal !== null) {
+            currentRate = Number(customVal) || 0;
+          } else {
+            const isPrimary = Number(b.id) === Number(bill.id) || Number(b.roomId) === primaryId || idx === 0;
+            const earlyDeduction = isPrimary ? earlyBaseDeduction : 0;
+            let bBase = Number(b.totalAmount || 0) - earlyDeduction;
+
+            const savedGstOptDetails = formData.gstOption || bill?.gstOption || 'none';
+            const savedGstRtDetails = Number(formData.gstRate !== undefined ? formData.gstRate : (bill?.gstRate || 0));
+            if (savedGstOptDetails === 'exclusive' && savedGstRtDetails > 0) {
+              bBase = bBase / (1 + savedGstRtDetails / 100);
+            }
+
+            const origStart = b.checkInDate ? b.checkInDate.split('T')[0] : '';
+            const origEnd = b.checkOutDate ? b.checkOutDate.split('T')[0] : '';
+            let origDays = 1;
+            if (origStart && origEnd) {
+              origDays = Math.ceil(Math.abs(new Date(origEnd) - new Date(origStart)) / (1000 * 60 * 60 * 24)) || 1;
+            }
+
+            const rawRate = origDays > 0 ? (bBase / origDays) : bBase;
+            currentRate = cleanRate(rawRate);
+          }
+
           totalSum += currentRate * bRoomDays;
         }
       });
@@ -711,10 +840,21 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
 
       let totalSum = 0;
       bookings.forEach((b, idx) => {
+        const shiftObj = isGroup ? updatedForm.groupRoomShifts?.find(s => s.bookingId === b.id) : null;
+        const bStartStr = shiftObj?.checkInDate ? shiftObj.checkInDate : (b.checkInDate ? b.checkInDate.split('T')[0] : startStr);
+        const bEndStr = shiftObj?.checkOutDate ? shiftObj.checkOutDate : (b.checkOutDate ? b.checkOutDate.split('T')[0] : endStr);
+        let bRoomDays = diffDays;
+        if (bStartStr && bEndStr) {
+          const daysDiff = Math.max(1, Math.ceil(Math.abs(new Date(bEndStr) - new Date(bStartStr)) / (1000 * 60 * 60 * 24)));
+          if (!isNaN(daysDiff)) {
+            bRoomDays = daysDiff;
+          }
+        }
+
         const customVal = getCustomRate(customRoomRates, b, idx);
         let rate = 0;
         if (customVal !== null) {
-          rate = customVal;
+          rate = Number(customVal) || 0;
         } else {
           const isPrimary = Number(b.id) === Number(bill.id) || Number(b.roomId) === primaryId || idx === 0;
           const earlyDeduction = isPrimary ? savedEarlyCharge : 0;
@@ -736,15 +876,6 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
           rate = cleanRate(rawFaceRate);
         }
 
-        let bRoomDays = diffDays;
-        if (b.status === 'Completed' && b.checkInDate && b.checkOutDate) {
-          const bStart = new Date(b.checkInDate.split('T')[0]);
-          const bEnd = new Date(b.checkOutDate.split('T')[0]);
-          const daysDiff = Math.max(1, Math.ceil(Math.abs(bEnd - bStart) / (1000 * 60 * 60 * 24)));
-          if (!isNaN(daysDiff)) {
-            bRoomDays = daysDiff;
-          }
-        }
         totalSum += rate * bRoomDays;
       });
 
@@ -900,11 +1031,13 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
           roundedRate = cleanRate(rawRate);
         }
 
+        const shiftObj = isGroup ? formData.groupRoomShifts?.find(s => s.bookingId === b.id) : null;
+        const curRoomObj = b.Room || allRooms.find(r => String(r.id) === String(b.roomId) || String(r.id) === String(shiftObj?.roomId));
+        const bStartStr = shiftObj?.checkInDate ? shiftObj.checkInDate : (b.checkInDate ? b.checkInDate.split('T')[0] : startStr);
+        const bEndStr = shiftObj?.checkOutDate ? shiftObj.checkOutDate : (b.checkOutDate ? b.checkOutDate.split('T')[0] : endStr);
         let roomDays = diffDays;
-        if (b.checkInDate && b.checkOutDate) {
-          const bStart = new Date(b.checkInDate.split('T')[0]);
-          const bEnd = new Date(b.checkOutDate.split('T')[0]);
-          const daysDiff = Math.max(1, Math.ceil(Math.abs(bEnd - bStart) / (1000 * 60 * 60 * 24)));
+        if (bStartStr && bEndStr) {
+          const daysDiff = Math.max(1, Math.ceil(Math.abs(new Date(bEndStr) - new Date(bStartStr)) / (1000 * 60 * 60 * 24)));
           if (!isNaN(daysDiff)) {
             roomDays = daysDiff;
           }
@@ -912,10 +1045,12 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
 
         details.push({
           roomId: b.id || b.roomId || idx,
-          roomNumber: cleanRoomNumber(b.Room?.roomNumber || b.roomNumber),
-          type: b.Room?.type || b.roomType || '',
+          roomNumber: cleanRoomNumber(curRoomObj?.roomNumber || b.roomNumber || shiftObj?.roomNumber),
+          type: curRoomObj?.type || b.type || shiftObj?.roomType || 'Deluxe',
           rate: roundedRate,
           days: roomDays,
+          checkInDate: bStartStr,
+          checkOutDate: bEndStr,
           total: Math.round((Number(roundedRate) || 0) * roomDays * 100) / 100
         });
       }
@@ -960,21 +1095,6 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
 
   return createPortal(
     <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
-      <style>{`
-        input[type="date"]::-webkit-calendar-picker-indicator,
-        input[type="time"]::-webkit-calendar-picker-indicator {
-          background: transparent;
-          bottom: 0;
-          color: transparent;
-          cursor: pointer;
-          height: auto;
-          left: 0;
-          position: absolute;
-          right: 0;
-          top: 0;
-          width: auto;
-        }
-      `}</style>
       <div className="bg-white w-full sm:max-w-5xl lg:max-w-[1150px] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh] animate-slide-up">
         {/* Header */}
         <div className="py-3.5 px-6 border-b border-[#DDE5D0] flex items-center justify-between shrink-0">
@@ -1019,15 +1139,13 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
                         type="date"
                         value={formData.bookingDate || ''}
                         disabled={!isFieldsEditable}
+                        onClick={(e) => e.target.showPicker?.()}
                         onChange={(e) => setFormData(prev => ({ ...prev, bookingDate: e.target.value }))}
-                        className={`w-full pl-2.5 pr-7 py-1.5 border rounded-lg text-xs font-bold focus:outline-none ${!isFieldsEditable
+                        className={`w-full pl-2.5 pr-2 py-1.5 border rounded-lg text-xs font-bold focus:outline-none cursor-pointer ${!isFieldsEditable
                           ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
                           : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
                           }`}
                       />
-                      <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-[#7A8A6A]">
-                        <Calendar size={13} />
-                      </div>
                     </div>
                   </div>
                   <div className="space-y-0.5">
@@ -1037,141 +1155,198 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
                         type="time"
                         value={formData.bookingTime || ''}
                         disabled={!isFieldsEditable}
+                        onClick={(e) => e.target.showPicker?.()}
                         onChange={(e) => setFormData(prev => ({ ...prev, bookingTime: e.target.value }))}
-                        className={`w-full pl-2.5 pr-7 py-1.5 border rounded-lg text-xs font-bold focus:outline-none ${!isFieldsEditable
+                        className={`w-full pl-2.5 pr-2 py-1.5 border rounded-lg text-xs font-bold focus:outline-none cursor-pointer ${!isFieldsEditable
                           ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
                           : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
                           }`}
                       />
-                      <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-[#7A8A6A]">
-                        <Clock size={13} />
-                      </div>
                     </div>
                   </div>
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-0.5">Check-in Date</label>
-                    <div className="relative">
-                      <input
-                        type="date"
-                        value={formData.checkInDate}
-                        disabled={!isFieldsEditable}
-                        onChange={(e) => handleDateChange('checkInDate', e.target.value)}
-                        className={`w-full pl-2.5 pr-7 py-1.5 border rounded-lg text-xs font-bold focus:outline-none ${!isFieldsEditable
-                          ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
-                          : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
-                          }`}
-                      />
-                      <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-[#7A8A6A]">
-                        <Calendar size={13} />
-                      </div>
-                    </div>
-                  </div>
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-0.5">Arrive Time</label>
-                    <div className="relative">
-                      <input
-                        type="time"
-                        value={formData.checkInTime}
-                        disabled={!isFieldsEditable}
-                        onChange={(e) => setFormData(prev => ({ ...prev, checkInTime: e.target.value }))}
-                        className={`w-full pl-2.5 pr-7 py-1.5 border rounded-lg text-xs font-bold focus:outline-none ${!isFieldsEditable
-                          ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
-                          : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
-                          }`}
-                      />
-                      <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-[#7A8A6A]">
-                        <Clock size={13} />
-                      </div>
-                    </div>
-                    <span className="text-[9px] text-[#7A8A6A] font-bold block mt-0.5">Default from booking time if empty</span>
-                  </div>
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-0.5">Check-out Date</label>
-                    <div className="relative">
-                      <input
-                        type="date"
-                        value={formData.checkOutDate}
-                        disabled={!isFieldsEditable}
-                        onChange={(e) => handleDateChange('checkOutDate', e.target.value)}
-                        className={`w-full pl-2.5 pr-7 py-1.5 border rounded-lg text-xs font-bold focus:outline-none ${!isFieldsEditable
-                          ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
-                          : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
-                          }`}
-                      />
-                      <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-[#7A8A6A]">
-                        <Calendar size={13} />
-                      </div>
-                    </div>
-                  </div>
-                  <div className="space-y-0.5">
-                    <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-0.5">Depart Time</label>
-                    <div className="relative">
-                      <input
-                        type="time"
-                        value={formData.checkOutTime}
-                        disabled={!isFieldsEditable}
-                        onChange={(e) => setFormData(prev => ({ ...prev, checkOutTime: e.target.value }))}
-                        className={`w-full pl-2.5 pr-7 py-1.5 border rounded-lg text-xs font-bold focus:outline-none ${!isFieldsEditable
-                          ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
-                          : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
-                          }`}
-                      />
-                      <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-[#7A8A6A]">
-                        <Clock size={13} />
-                      </div>
-                    </div>
-                    <span className="text-[9px] text-[#7A8A6A] font-bold block mt-0.5">Default from checkout time if empty</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Card 2: Room Assignment */}
-              <div className="bg-[#F5F7F0]/70 border border-[#DDE5D0] rounded-xl p-3.5 sm:p-4 space-y-3 shadow-sm">
-                <div className="flex items-center gap-2 border-b border-[#DDE5D0]/40 pb-1.5">
-                  <span className="text-[10px] font-black text-[#84A63C] uppercase tracking-wider">2. Room Assignment</span>
-                </div>
-                <div className="space-y-0.5">
-                  <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-0.5">
-                    {isGroup ? 'Shift Rooms (Group)' : 'Shift Room'}
-                    {bill?.previousRoomNumber && !isGroup && <span className="text-orange-500 text-[10px] font-bold"> (Prev: Room {cleanRoomNumber(bill.previousRoomNumber)})</span>}
-                  </label>
-                  {isGroup ? (
-                    <div className="space-y-2">
-                      {formData.groupRoomShifts?.map(shift => (
-                        <div key={shift.bookingId} className="flex items-center gap-2.5">
-                          <span className="text-[11px] font-black text-[#7A8A6A] w-24 shrink-0 whitespace-nowrap">
-                            Room {cleanRoomNumber(shift.roomNumber)} {shift.previousRoomNumber ? `(Prev: ${cleanRoomNumber(shift.previousRoomNumber)})` : ''}
-                          </span>
-                          <select
-                            value={shift.roomId}
+                  {!isGroup ? (
+                    <>
+                      <div className="space-y-0.5">
+                        <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-0.5">Check-in Date</label>
+                        <div className="relative">
+                          <input
+                            type="date"
+                            value={formData.checkInDate}
                             disabled={!isFieldsEditable}
-                            onChange={(e) => handleGroupRoomShift(shift.bookingId, e.target.value)}
-                            className={`w-full px-3 py-2 border rounded-lg text-xs sm:text-sm font-bold focus:outline-none ${!isFieldsEditable
+                            onClick={(e) => e.target.showPicker?.()}
+                            onChange={(e) => handleDateChange('checkInDate', e.target.value)}
+                            className={`w-full pl-2.5 pr-2 py-1.5 border rounded-lg text-xs font-bold focus:outline-none cursor-pointer ${!isFieldsEditable
                               ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
                               : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
                               }`}
-                          >
-                            {allRooms.map(r => (
-                              <option key={r.id} value={r.id}>Room {r.roomNumber} - {r.type} ({r.status === 'available' ? '✅ Available' : r.id === shift.originalRoomId ? '🔵 Current' : '🔴 Occupied'})</option>
-                            ))}
-                          </select>
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-0.5">
+                        <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-0.5">Arrive Time</label>
+                        <div className="relative">
+                          <input
+                            type="time"
+                            value={formData.checkInTime}
+                            disabled={!isFieldsEditable}
+                            onClick={(e) => e.target.showPicker?.()}
+                            onChange={(e) => setFormData(prev => ({ ...prev, checkInTime: e.target.value }))}
+                            className={`w-full pl-2.5 pr-2 py-1.5 border rounded-lg text-xs font-bold focus:outline-none cursor-pointer ${!isFieldsEditable
+                              ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
+                              : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
+                              }`}
+                          />
+                        </div>
+                        <span className="text-[9px] text-[#7A8A6A] font-bold block mt-0.5">Default from booking time if empty</span>
+                      </div>
+                      <div className="space-y-0.5">
+                        <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-0.5">Check-out Date</label>
+                        <div className="relative">
+                          <input
+                            type="date"
+                            value={formData.checkOutDate}
+                            disabled={!isFieldsEditable}
+                            onClick={(e) => e.target.showPicker?.()}
+                            onChange={(e) => handleDateChange('checkOutDate', e.target.value)}
+                            className={`w-full pl-2.5 pr-2 py-1.5 border rounded-lg text-xs font-bold focus:outline-none cursor-pointer ${!isFieldsEditable
+                              ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
+                              : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
+                              }`}
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-0.5">
+                        <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-0.5">Depart Time</label>
+                        <div className="relative">
+                          <input
+                            type="time"
+                            value={formData.checkOutTime}
+                            disabled={!isFieldsEditable}
+                            onClick={(e) => e.target.showPicker?.()}
+                            onChange={(e) => setFormData(prev => ({ ...prev, checkOutTime: e.target.value }))}
+                            className={`w-full pl-2.5 pr-2 py-1.5 border rounded-lg text-xs font-bold focus:outline-none cursor-pointer ${!isFieldsEditable
+                              ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
+                              : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
+                              }`}
+                          />
+                        </div>
+                        <span className="text-[9px] text-[#7A8A6A] font-bold block mt-0.5">Default from checkout time if empty</span>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="sm:col-span-2 p-2 bg-[#EEF4E3] border border-[#D3E2BD] rounded-lg text-[11px] font-bold text-[#2E4316]">
+                      Multi-Room Group Booking ({formData.groupRoomShifts?.length || 0} Rooms). Individual room stay dates and shift assignments are configured below in Section 2.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Card 2: Room Assignment & Stay Schedule */}
+              <div className="bg-[#F5F7F0]/70 border border-[#DDE5D0] rounded-xl p-3.5 sm:p-4 space-y-3 shadow-sm">
+                <div className="flex items-center gap-2 border-b border-[#DDE5D0]/40 pb-1.5">
+                  <span className="text-[10px] font-black text-[#84A63C] uppercase tracking-wider">
+                    {isGroup ? '2. Room Assignment & Stay Schedule (Group)' : '2. Room Assignment'}
+                  </span>
+                </div>
+                <div className="space-y-0.5">
+                  {isGroup ? (
+                    <div className="space-y-3">
+                      {formData.groupRoomShifts?.map((shift, sIdx) => (
+                        <div key={shift.bookingId} className="bg-white p-3 rounded-xl border border-[#DDE5D0] space-y-2.5 shadow-2xs">
+                          <div className="flex items-center justify-between border-b border-[#DDE5D0]/50 pb-1.5">
+                            <span className="text-xs font-black text-[#1A2E05]">
+                              Room {cleanRoomNumber(shift.roomNumber)} ({shift.roomType || 'Standard'}) {shift.previousRoomNumber ? `(Prev: ${cleanRoomNumber(shift.previousRoomNumber)})` : ''}
+                            </span>
+                            <span className="text-[10px] font-black text-[#84A63C] bg-[#F5F7F0] px-2 py-0.5 rounded border border-[#DDE5D0]">
+                              {shift.days} {shift.days === 1 ? 'Night' : 'Nights'}
+                            </span>
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-[9.5px] font-black text-[#4A5E38] uppercase">Shift Room</label>
+                            <select
+                              value={shift.roomId}
+                              disabled={!isFieldsEditable}
+                              onChange={(e) => handleGroupRoomShift(shift.bookingId, e.target.value)}
+                              className={`w-full px-2.5 py-1.5 border rounded-lg text-xs font-bold focus:outline-none ${!isFieldsEditable
+                                ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
+                                : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
+                                }`}
+                            >
+                              {allRooms.map(r => (
+                                <option key={r.id} value={r.id}>Room {r.roomNumber} - {r.type} ({r.status === 'available' ? '✅ Available' : r.id === shift.originalRoomId ? '🔵 Current' : '🔴 Occupied'})</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                            <div>
+                              <label className="text-[9.5px] font-bold text-[#4A5E38] block mb-0.5">Check-In Date</label>
+                              <input
+                                type="date"
+                                value={shift.checkInDate || ''}
+                                disabled={!isFieldsEditable}
+                                onClick={(e) => e.target.showPicker?.()}
+                                onChange={(e) => handleGroupRoomDateChange(shift.bookingId, 'checkInDate', e.target.value)}
+                                className={`w-full px-2 py-1.5 border rounded-lg text-xs font-bold cursor-pointer ${!isFieldsEditable ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'}`}
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[9.5px] font-bold text-[#4A5E38] block mb-0.5">Arrive Time</label>
+                              <input
+                                type="time"
+                                value={shift.checkInTime || ''}
+                                disabled={!isFieldsEditable}
+                                onClick={(e) => e.target.showPicker?.()}
+                                onChange={(e) => handleGroupRoomDateChange(shift.bookingId, 'checkInTime', e.target.value)}
+                                className={`w-full px-2 py-1.5 border rounded-lg text-xs font-bold cursor-pointer ${!isFieldsEditable ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'}`}
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[9.5px] font-bold text-[#4A5E38] block mb-0.5">Check-Out Date</label>
+                              <input
+                                type="date"
+                                value={shift.checkOutDate || ''}
+                                disabled={!isFieldsEditable}
+                                onClick={(e) => e.target.showPicker?.()}
+                                onChange={(e) => handleGroupRoomDateChange(shift.bookingId, 'checkOutDate', e.target.value)}
+                                className={`w-full px-2 py-1.5 border rounded-lg text-xs font-bold cursor-pointer ${!isFieldsEditable ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'}`}
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[9.5px] font-bold text-[#4A5E38] block mb-0.5">Depart Time</label>
+                              <input
+                                type="time"
+                                value={shift.checkOutTime || ''}
+                                disabled={!isFieldsEditable}
+                                onClick={(e) => e.target.showPicker?.()}
+                                onChange={(e) => handleGroupRoomDateChange(shift.bookingId, 'checkOutTime', e.target.value)}
+                                className={`w-full px-2 py-1.5 border rounded-lg text-xs font-bold cursor-pointer ${!isFieldsEditable ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'}`}
+                              />
+                            </div>
+                          </div>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <select
-                      value={formData.roomId}
-                      disabled={!isFieldsEditable}
-                      onChange={(e) => handleSingleRoomShift(e.target.value)}
-                      className={`w-full px-3 py-2 border rounded-lg text-xs sm:text-sm font-bold focus:outline-none ${!isFieldsEditable
-                        ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
-                        : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
-                        }`}
-                    >
-                      {allRooms.map(r => (
-                        <option key={r.id} value={r.id}>Room {r.roomNumber} - {r.type} ({r.status === 'available' ? '✅ Available' : r.id === bill?.roomId ? '🔵 Current' : '🔴 Occupied'})</option>
-                      ))}
-                    </select>
+                    <div>
+                      <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-0.5">
+                        Shift Room {bill?.previousRoomNumber && <span className="text-orange-500 text-[10px] font-bold"> (Prev: Room {cleanRoomNumber(bill.previousRoomNumber)})</span>}
+                      </label>
+                      <select
+                        value={formData.roomId}
+                        disabled={!isFieldsEditable}
+                        onChange={(e) => handleSingleRoomShift(e.target.value)}
+                        className={`w-full px-3 py-2 border rounded-lg text-xs sm:text-sm font-bold focus:outline-none ${!isFieldsEditable
+                          ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
+                          : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
+                          }`}
+                      >
+                        {allRooms.map(r => (
+                          <option key={r.id} value={r.id}>Room {r.roomNumber} - {r.type} ({r.status === 'available' ? '✅ Available' : r.id === bill?.roomId ? '🔵 Current' : '🔴 Occupied'})</option>
+                        ))}
+                      </select>
+                    </div>
                   )}
                 </div>
               </div>
@@ -1213,7 +1388,7 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
                       </div>
                     </span>
                   </div>
-                  <div className="space-y-1 sm:col-span-2">
+                  <div className="space-y-1">
                     <label className="text-[11px] font-black text-[#4A5E38] uppercase tracking-wider block mb-0.5">Discount Amount (Rs)</label>
                     <input
                       type="number"
@@ -1221,6 +1396,21 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
                       disabled={!isFieldsEditable}
                       value={formData.discount}
                       onChange={(e) => setFormData(prev => ({ ...prev, discount: e.target.value }))}
+                      placeholder="0.00"
+                      className={`w-full px-3 py-2 border rounded-lg text-xs sm:text-sm font-bold focus:outline-none ${!isFieldsEditable
+                        ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
+                        : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
+                        }`}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-black text-[#4A5E38] uppercase tracking-wider block mb-0.5">Purpose of Discount</label>
+                    <input
+                      type="text"
+                      disabled={!isFieldsEditable}
+                      value={formData.discountReason || ''}
+                      onChange={(e) => setFormData(prev => ({ ...prev, discountReason: e.target.value }))}
+                      placeholder="e.g. Regular Guest, Manager Offer"
                       className={`w-full px-3 py-2 border rounded-lg text-xs sm:text-sm font-bold focus:outline-none ${!isFieldsEditable
                         ? 'bg-[#F5F7F0]/40 text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
                         : 'bg-[#FBFDF8] border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
@@ -1259,6 +1449,7 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
                 earlyCheckInCharge={formData.earlyCheckInCharge || 0}
                 onEarlyCheckInChargeChange={isFieldsEditable ? (val) => setFormData(prev => ({ ...prev, earlyCheckInCharge: val })) : undefined}
                 discount={Number(formData.discount || 0)}
+                discountReason={formData.discountReason || ''}
               />
 
               {/* Card 4: Tax & Invoice Details */}
@@ -1379,34 +1570,13 @@ const EditBillModal = ({ isOpen, onClose, bill, onSave }) => {
               const earlyBaseDeduction = savedEarlyCharge / rateFactor;
               const primaryId = bill?.roomId ? Number(bill.roomId) : null;
 
-              const individualRoomTotals = bookings.map((b, idx) => {
-                const startStr = b.checkInDate ? b.checkInDate.split('T')[0] : '';
-                const endStr = b.checkOutDate ? b.checkOutDate.split('T')[0] : '';
-                let diffDays = 1;
-                if (startStr && endStr) {
-                  const start = new Date(startStr);
-                  const end = new Date(endStr);
-                  diffDays = Math.ceil(Math.abs(end - start) / (1000 * 60 * 60 * 24)) || 1;
-                }
-                const customVal = getCustomRate(customRoomRates, b, idx);
-                let rate = 0;
-                if (customVal !== null) {
-                  rate = Number(customVal) || 0;
-                } else {
-                  const isPrimary = Number(b.id) === Number(bill.id) || Number(b.roomId) === primaryId || idx === 0;
-                  const earlyDeduction = isPrimary ? earlyBaseDeduction : 0;
-                  const bBase = Number(b.totalAmount || 0) - earlyDeduction;
-                  const rawRate = diffDays > 0 ? (bBase / diffDays) * rateFactor : bBase * rateFactor;
-                  rate = cleanRate(rawRate);
-                }
-                const roomIncOrExcTotal = rate * diffDays;
-                const roomBaseTotal = gstOption === 'inclusive' ? roomIncOrExcTotal / rateFactor : roomIncOrExcTotal;
-                const isPrimary = Number(b.id) === Number(bill.id) || Number(b.roomId) === primaryId || idx === 0;
-                const finalRoomBase = isPrimary ? roomBaseTotal + earlyBaseDeduction : roomBaseTotal;
+              const individualRoomTotals = (isGroup ? bill.groupBookings : [bill]).map((b, idx) => {
+                const calcItem = roomCalculationDetails.find(item => String(item.roomId) === String(b.id) || String(item.roomId) === String(b.roomId)) || roomCalculationDetails[idx];
+                const roomTotal = calcItem ? Number(calcItem.total || 0) : Number(b.totalAmount || 0);
 
                 return {
                   bookingId: b.id,
-                  baseTotal: finalRoomBase
+                  baseTotal: roomTotal
                 };
               });
 
@@ -1971,19 +2141,54 @@ const Billing = () => {
 
   const handleUpdate = async (id, data) => {
     try {
-      if (data.groupRoomShifts) {
+      if (data.groupRoomShifts && data.groupRoomShifts.length > 0) {
         for (const shift of data.groupRoomShifts) {
-          if (shift.roomId !== shift.originalRoomId) {
-            await api.put(`/bookings/${shift.bookingId}`, { roomId: shift.roomId });
+          const shiftPayload = {
+            isSingleRoomDateUpdate: true,
+            checkInDate: shift.checkInDate,
+            checkOutDate: shift.checkOutDate,
+            checkInTime: shift.checkInTime,
+            checkOutTime: shift.checkOutTime
+          };
+          if (shift.roomId && shift.roomId !== shift.originalRoomId) {
+            shiftPayload.roomId = shift.roomId;
           }
+          await api.put(`/bookings/${shift.bookingId}`, shiftPayload);
         }
         delete data.groupRoomShifts;
       }
 
       if (data.individualRoomTotals && data.individualRoomTotals.length > 0) {
-        const roomDiscount = data.discount ? (data.discount / data.individualRoomTotals.length) : 0;
-        for (const item of data.individualRoomTotals) {
-          await api.put(`/bookings/${item.bookingId}`, {
+        const isMultiRoomGroup = data.individualRoomTotals.length > 1;
+        const totalGroupBase = data.individualRoomTotals.reduce((sum, item) => sum + Number(item.baseTotal || 0), 0) || 1;
+        let accumulatedPaid = 0;
+        let accumulatedDiscount = 0;
+
+        for (let i = 0; i < data.individualRoomTotals.length; i++) {
+          const item = data.individualRoomTotals[i];
+          const proportion = Number(item.baseTotal || 0) / totalGroupBase;
+
+          let roomPaid = undefined;
+          if (data.amountPaid !== undefined) {
+            if (i === data.individualRoomTotals.length - 1) {
+              roomPaid = Math.round((Number(data.amountPaid) - accumulatedPaid) * 100) / 100;
+            } else {
+              roomPaid = Math.round((Number(data.amountPaid) * proportion) * 100) / 100;
+              accumulatedPaid += roomPaid;
+            }
+          }
+
+          let roomDisc = undefined;
+          if (data.discount !== undefined) {
+            if (i === data.individualRoomTotals.length - 1) {
+              roomDisc = Math.round((Number(data.discount) - accumulatedDiscount) * 100) / 100;
+            } else {
+              roomDisc = Math.round((Number(data.discount) * proportion) * 100) / 100;
+              accumulatedDiscount += roomDisc;
+            }
+          }
+
+          const roomPayload = {
             totalAmount: item.baseTotal,
             gstOption: data.gstOption,
             gstRate: data.gstRate,
@@ -1991,14 +2196,26 @@ const Billing = () => {
             companyName: data.companyName,
             companyAddress: data.companyAddress,
             registrationNumber: data.registrationNumber,
-            discount: roomDiscount
-          });
+            skipGroupDistribution: true
+          };
+          if (roomPaid !== undefined) roomPayload.amountPaid = roomPaid;
+          if (roomDisc !== undefined) roomPayload.discount = roomDisc;
+          if (data.discountReason !== undefined) roomPayload.discountReason = data.discountReason;
+
+          await api.put(`/bookings/${item.bookingId}`, roomPayload);
         }
-        // Delete individualRoomTotals, but preserve data.totalAmount for the primary booking update
+        if (isMultiRoomGroup) {
+          delete data.totalAmount;
+          delete data.amountPaid;
+          delete data.discount;
+        }
         delete data.individualRoomTotals;
       }
 
-      await api.put(`/bookings/${id}`, data);
+      await api.put(`/bookings/${id}`, {
+        ...data,
+        skipGroupDistribution: true
+      });
       setIsEditOpen(false);
       fetchBillingData();
     } catch (error) {
@@ -2069,37 +2286,86 @@ const Billing = () => {
     let roomGstAmount = 0;
     let grandTotal = 0;
 
+    let extraGstAmount = 0;
+    let extraSubTotal = extraChargesTotal;
+    let extraGrandTotal = extraChargesTotal;
+
+    if (bill.extraChargesList && Array.isArray(bill.extraChargesList) && bill.extraChargesList.length > 0) {
+      let calculatedExtraSub = 0;
+      let calculatedExtraGst = 0;
+      let calculatedExtraGrand = 0;
+
+      bill.extraChargesList.forEach(ec => {
+        const qtyNum = parseInt(ec.qty) || 1;
+        const priceNum = parseFloat(ec.price) || 0;
+        const itemSubtotal = qtyNum * priceNum;
+        const ecGstOpt = ec.gstOption || 'inclusive';
+        const ecGstRt = Number(ec.gstRate !== undefined && ec.gstRate !== null ? ec.gstRate : 0);
+
+        let itemBase = itemSubtotal;
+        let itemGst = 0;
+        let itemGrand = itemSubtotal;
+
+        if (ec.grandTotal !== undefined && ec.grandTotal !== null && Number(ec.grandTotal) > 0) {
+          itemGrand = Number(ec.grandTotal);
+          if (ecGstOpt === 'inclusive' && ecGstRt > 0) {
+            itemBase = Math.round((itemGrand / (1 + ecGstRt / 100)) * 100) / 100;
+            itemGst = Math.round((itemGrand - itemBase) * 100) / 100;
+          } else if (ecGstOpt === 'exclusive' && ecGstRt > 0) {
+            itemBase = itemSubtotal;
+            itemGst = Math.round((itemGrand - itemBase) * 100) / 100;
+          } else {
+            itemBase = itemGrand;
+            itemGst = 0;
+          }
+        } else {
+          if (ecGstOpt === 'inclusive' && ecGstRt > 0) {
+            itemBase = Math.round((itemSubtotal / (1 + ecGstRt / 100)) * 100) / 100;
+            itemGst = Math.round((itemSubtotal - itemBase) * 100) / 100;
+            itemGrand = itemSubtotal;
+          } else if (ecGstOpt === 'exclusive' && ecGstRt > 0) {
+            itemBase = itemSubtotal;
+            itemGst = Math.round((itemSubtotal * (ecGstRt / 100)) * 100) / 100;
+            itemGrand = itemSubtotal + itemGst;
+          } else {
+            itemBase = itemSubtotal;
+            itemGst = 0;
+            itemGrand = itemSubtotal;
+          }
+        }
+
+        calculatedExtraSub += itemBase;
+        calculatedExtraGst += itemGst;
+        calculatedExtraGrand += itemGrand;
+      });
+
+      extraSubTotal = calculatedExtraSub;
+      extraGstAmount = calculatedExtraGst;
+      extraGrandTotal = calculatedExtraGrand;
+    } else if (extraChargesTotal > 0 && gstOption !== 'none') {
+      extraSubTotal = gstRate > 0 ? Math.round((extraChargesTotal / (1 + gstRate / 100)) * 100) / 100 : extraChargesTotal;
+      extraGstAmount = Math.round((extraChargesTotal - extraSubTotal) * 100) / 100;
+      extraGrandTotal = extraChargesTotal;
+    } else {
+      extraSubTotal = extraChargesTotal;
+      extraGstAmount = 0;
+      extraGrandTotal = extraChargesTotal;
+    }
+
     if (gstOption === 'exclusive') {
       subTotal = netRoomTotal;
       roomGstAmount = gstRate > 0 ? Math.round((subTotal * (gstRate / 100)) * 100) / 100 : 0;
-      grandTotal = subTotal + roomGstAmount + extraChargesTotal;
+      grandTotal = subTotal + roomGstAmount + extraGrandTotal;
       baseAmount = subTotal + discount;
     } else if (gstOption === 'inclusive') {
-      grandTotal = netRoomTotal + extraChargesTotal;
+      grandTotal = netRoomTotal + extraGrandTotal;
       subTotal = gstRate > 0 ? Math.round((netRoomTotal / (1 + gstRate / 100)) * 100) / 100 : netRoomTotal;
       roomGstAmount = Math.round((netRoomTotal - subTotal) * 100) / 100;
       baseAmount = subTotal + discount;
     } else {
       roomGstAmount = 0;
-      grandTotal = netRoomTotal + extraChargesTotal;
+      grandTotal = netRoomTotal + extraGrandTotal;
       subTotal = netRoomTotal;
-    }
-
-    let extraGstAmount = 0;
-    let extraSubTotal = extraChargesTotal;
-    if (bill.extraChargesList && Array.isArray(bill.extraChargesList) && bill.extraChargesList.length > 0) {
-      extraGstAmount = bill.extraChargesList.reduce((s, ec) => s + Number(ec.gstAmount || 0), 0);
-      const extraSubSum = bill.extraChargesList.reduce((s, ec) => s + Number(ec.subtotal || ec.baseAmount || 0), 0);
-      if (extraSubSum > 0) {
-        extraSubTotal = extraSubSum;
-      } else {
-        extraSubTotal = Math.max(0, extraChargesTotal - extraGstAmount);
-      }
-    } else if (extraChargesTotal > 0 && gstOption !== 'none') {
-      extraSubTotal = gstRate > 0 ? (extraChargesTotal / (1 + gstRate / 100)) : extraChargesTotal;
-      extraGstAmount = extraChargesTotal - extraSubTotal;
-    } else {
-      extraSubTotal = extraChargesTotal;
     }
 
     const pending = grandTotal - amountPaid;
@@ -2277,34 +2543,28 @@ const Billing = () => {
   };
 
   return (
-    <div className="space-y-4 pb-6">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
-        <div>
-          <div className="flex items-center gap-3">
-            {/* <h1 className="text-2xl font-bold text-[#1A2E05] tracking-tight">Billing and Payment</h1> */}
-            {activeHotel?.resetInvoiceYearly && (
-              <span className="bg-[#84A63C]/10 text-[#84A63C] text-[10px] font-bold px-2.5 py-0.5 rounded-full border border-[#84A63C]/20 shadow-sm flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#84A63C]"></span>
-                Year Ending Reset: {(() => {
-                  if (!activeHotel.yearEndingDate) return '';
-                  const [mStr, dStr] = activeHotel.yearEndingDate.split('-');
-                  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-                  const mIdx = parseInt(mStr, 10) - 1;
-                  const day = parseInt(dStr, 10);
-                  let suffix = 'th';
-                  if (day === 1 || day === 21 || day === 31) suffix = 'st';
-                  else if (day === 2 || day === 22) suffix = 'nd';
-                  else if (day === 3 || day === 23) suffix = 'rd';
-                  return `${day}${suffix} ${months[mIdx] || ''}`;
-                })()}
-              </span>
-            )}
-          </div>
+    <div className="space-y-3 pb-6">
+      {activeHotel?.resetInvoiceYearly && activeHotel?.yearEndingDate && (
+        <div className="flex justify-end">
+          <span className="bg-[#84A63C]/10 text-[#84A63C] text-[10px] font-bold px-2.5 py-0.5 rounded-full border border-[#84A63C]/20 shadow-xs flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#84A63C]"></span>
+            Year Ending Reset: {(() => {
+              const [mStr, dStr] = activeHotel.yearEndingDate.split('-');
+              const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+              const mIdx = parseInt(mStr, 10) - 1;
+              const day = parseInt(dStr, 10);
+              let suffix = 'th';
+              if (day === 1 || day === 21 || day === 31) suffix = 'st';
+              else if (day === 2 || day === 22) suffix = 'nd';
+              else if (day === 3 || day === 23) suffix = 'rd';
+              return `${day}${suffix} ${months[mIdx] || ''}`;
+            })()}
+          </span>
         </div>
-      </div>
+      )}
 
       {/* Date Range Filter Bar */}
-      <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-[#DDE5D0] shadow-sm space-y-2.5">
+      <div className="bg-white p-3 sm:p-3.5 rounded-xl border border-[#DDE5D0] shadow-xs space-y-2">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
           <div className="flex items-center gap-1.5">
             <Calendar size={15} className="text-[#84A63C]" />
@@ -2446,7 +2706,20 @@ const Billing = () => {
         <StatCard
           label="Total Pending Amount"
           value={formatValue(stats && stats.pendingDues !== undefined ? stats.pendingDues : gstStats.totalPendingAmount)}
-          subtext="Outstanding Dues"
+          subtext={
+            Number(stats?.totalPayCustomer || 0) > 0 ? (
+              <div className="flex flex-col gap-0.5 text-[9px] font-bold text-rose-700">
+                <div className="flex justify-between items-center gap-1.5">
+                  <span>Pending Dues:</span>
+                  <span className="font-black text-rose-800">₹{Number(stats.pendingDues || 0).toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex justify-between items-center gap-1.5 text-indigo-700">
+                  <span>Pay Customer:</span>
+                  <span className="font-black text-indigo-900">₹{Number(stats.totalPayCustomer || 0).toLocaleString('en-IN')}</span>
+                </div>
+              </div>
+            ) : "Outstanding Dues"
+          }
           icon={Wallet}
           color="text-rose-600"
           bgColor="bg-rose-50"
@@ -2543,14 +2816,14 @@ const Billing = () => {
                   onClick={() => setGstFilter('checkout')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${gstFilter === 'checkout' ? 'bg-emerald-600 text-white shadow-xs' : 'text-emerald-700 hover:bg-emerald-50'}`}
                 >
-                  <CheckCircle size={13} /> Checked-Out GST
+                  <CheckCircle size={13} /> Checked-Out
                 </button>
                 <button
                   type="button"
                   onClick={() => setGstFilter('not_checkout')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${gstFilter === 'not_checkout' ? 'bg-amber-600 text-white shadow-xs' : 'text-amber-700 hover:bg-amber-50'}`}
                 >
-                  <Clock size={13} /> Not Checked-Out GST
+                  <Clock size={13} /> Not Checked-Out
                 </button>
               </div>
             </div>
@@ -2578,6 +2851,18 @@ const Billing = () => {
                   className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${paymentFilter === 'pending' ? 'bg-rose-600 text-white shadow-xs' : 'text-rose-700 hover:bg-rose-50'}`}
                 >
                   <Clock size={13} /> Pending
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentFilter('pay_customer')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${paymentFilter === 'pay_customer' ? 'bg-indigo-600 text-white shadow-xs' : 'text-indigo-700 hover:bg-indigo-50'}`}
+                >
+                  <ArrowDownLeft size={13} /> Pay Customer
+                  {Number(stats?.totalPayCustomer || 0) > 0 && (
+                    <span className={`text-[10px] font-black px-1.5 py-0.2 rounded-full ${paymentFilter === 'pay_customer' ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'}`}>
+                      ₹{Number(stats.totalPayCustomer || 0).toLocaleString('en-IN')}
+                    </span>
+                  )}
                 </button>
               </div>
 
@@ -2971,11 +3256,11 @@ const Billing = () => {
                           </div>
                         </td>
                         <td className="px-2 py-2 text-right">
-                          <div className="flex gap-1 justify-end">
-                            <button onClick={() => { setSelectedBill(bill); setIsViewOpen(true); }} className="p-1 text-[#7A8A6A] hover:text-green-600 hover:bg-white rounded-md transition-all border border-[#DDE5D0]" title="View Invoice"><Eye size={13} /></button>
-                            <button onClick={() => { setSelectedBill(bill); setIsEditOpen(true); }} className="p-1 text-[#7A8A6A] hover:text-blue-600 hover:bg-white rounded-md transition-all border border-[#DDE5D0]" title="Edit Billing"><Edit size={13} /></button>
-                            <button onClick={() => { setSelectedBill(bill); setIsPayOpen(true); }} className="px-1.5 py-0.5 bg-amber-50 text-amber-600 hover:bg-amber-100 rounded-md transition-all border border-amber-200 flex items-center gap-1 text-[9.5px] font-black" title="Quick Pay & Ledger"><Wallet size={11} /> Collect</button>
-                            <button onClick={() => handleDownloadInvoice(bill)} className="p-1 text-[#7A8A6A] hover:text-[#84A63C] hover:bg-white rounded-md transition-all border border-[#DDE5D0]" title="Download PDF"><Download size={13} /></button>
+                          <div className="flex gap-1.5 justify-end items-center">
+                            <button onClick={() => { setSelectedBill(bill); setIsViewOpen(true); }} className="p-1.5 text-[#7A8A6A] hover:text-green-600 hover:bg-white rounded-lg transition-all border border-[#DDE5D0] shadow-2xs cursor-pointer" title="View Invoice"><Eye size={16} /></button>
+                            <button onClick={() => { setSelectedBill(bill); setIsEditOpen(true); }} className="p-1.5 text-[#7A8A6A] hover:text-blue-600 hover:bg-white rounded-lg transition-all border border-[#DDE5D0] shadow-2xs cursor-pointer" title="Edit Billing"><Edit size={16} /></button>
+                            <button onClick={() => { setSelectedBill(bill); setIsPayOpen(true); }} className="px-2 py-1 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded-lg transition-all border border-amber-300 flex items-center gap-1.5 text-[11px] font-bold shadow-2xs cursor-pointer" title="Quick Pay & Ledger"><Wallet size={13} /> Collect</button>
+                            <button onClick={() => handleDownloadInvoice(bill)} className="p-1.5 text-[#7A8A6A] hover:text-[#84A63C] hover:bg-white rounded-lg transition-all border border-[#DDE5D0] shadow-2xs cursor-pointer" title="Download PDF"><Download size={16} /></button>
                           </div>
                         </td>
                       </tr>

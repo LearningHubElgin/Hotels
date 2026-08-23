@@ -86,9 +86,18 @@ const GuestBillingDetails = () => {
   const financialData = useMemo(() => {
     if (!booking) return null;
 
-    const baseAmount = Number(booking.totalAmount || 0);
-    const discount = Number(booking.discount || 0);
-    const amountPaid = Number(booking.amountPaid || 0);
+    const isGroup = booking.groupBookings && booking.groupBookings.length > 0;
+
+    let baseAmount = Number(booking.totalAmount || 0);
+    let discount = Number(booking.discount || 0);
+    let amountPaid = Number(booking.amountPaid || 0);
+
+    if (isGroup) {
+      baseAmount = booking.groupBookings.reduce((sum, b) => sum + Number(b.totalAmount || 0), 0);
+      discount = booking.groupBookings.reduce((sum, b) => sum + Number(b.discount || 0), 0);
+      amountPaid = booking.groupBookings.reduce((sum, b) => sum + Number(b.amountPaid || 0), 0);
+    }
+
     const gstRate = Number(booking.gstRate !== undefined && booking.gstRate !== null ? booking.gstRate : (activeHotel?.defaultGstRate !== undefined ? Number(activeHotel.defaultGstRate) : 12));
     const gstOption = booking.gstOption || 'none';
 
@@ -128,8 +137,29 @@ const GuestBillingDetails = () => {
 
     let paymentHistory = [];
     try {
-      if (booking.paymentHistory) {
-        paymentHistory = JSON.parse(booking.paymentHistory);
+      if (isGroup) {
+        const allHist = [];
+        const seenTx = new Set();
+        booking.groupBookings.forEach(gb => {
+          if (gb.paymentHistory) {
+            try {
+              const parsed = typeof gb.paymentHistory === 'string' ? JSON.parse(gb.paymentHistory) : gb.paymentHistory;
+              if (Array.isArray(parsed)) {
+                parsed.forEach(tx => {
+                  const key = `${tx.date}_${tx.time}_${tx.amount}_${tx.paymentMode}`;
+                  if (!seenTx.has(key)) {
+                    seenTx.add(key);
+                    allHist.push(tx);
+                  }
+                });
+              }
+            } catch (e) {}
+          }
+        });
+        paymentHistory = allHist;
+      }
+      if (paymentHistory.length === 0 && booking.paymentHistory) {
+        paymentHistory = typeof booking.paymentHistory === 'string' ? JSON.parse(booking.paymentHistory) : booking.paymentHistory;
       }
     } catch (e) {
       paymentHistory = [];
@@ -195,6 +225,10 @@ const GuestBillingDetails = () => {
   const roomNumbersStr = booking.groupBookings && booking.groupBookings.length > 0
     ? booking.groupBookings.map(b => cleanRoomNumber(b.Room?.roomNumber || b.roomId)).join(', ')
     : (booking.Room?.roomNumber ? cleanRoomNumber(booking.Room.roomNumber) : 'N/A');
+
+  const roomTypesStr = booking.groupBookings && booking.groupBookings.length > 0
+    ? [...new Set(booking.groupBookings.map(b => b.Room?.type).filter(Boolean))].join(', ')
+    : (booking.Room?.type || 'Standard');
 
   const checkInDateFormatted = formatDateDMY(booking.checkInDate || booking.createdAt);
   const checkOutDateFormatted = formatDateDMY(booking.checkOutDate);
@@ -300,7 +334,7 @@ const GuestBillingDetails = () => {
             </div>
             <div className="flex items-center justify-between">
               <span className="font-bold text-[#2E4316]">Room Type:</span>
-              <span className="font-bold text-[#1A2E05]">{booking.Room?.type || 'Standard'}</span>
+              <span className="font-bold text-[#1A2E05]">{roomTypesStr}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="font-bold text-[#2E4316]">Stay Duration:</span>
@@ -529,7 +563,26 @@ const GuestBillingDetails = () => {
                   <tr>
                     <td className="py-2">
                       <p className="font-black text-[#1A2E05]">Room Charges (R-{roomNumbersStr})</p>
-                      <p className="text-[9.5px] text-[#2E4316] font-bold">{stayDays} {stayDays === 1 ? 'Night' : 'Nights'} stay</p>
+                      {booking.groupBookings && booking.groupBookings.length > 1 ? (
+                        <div className="space-y-1 mt-1">
+                          {booking.groupBookings.map((gb, gIdx) => {
+                            const gbIn = gb.checkInDate ? formatDateDMY(gb.checkInDate) : checkInDateFormatted;
+                            const gbOut = gb.checkOutDate ? formatDateDMY(gb.checkOutDate) : checkOutDateFormatted;
+                            const gbDays = gb.checkInDate && gb.checkOutDate
+                              ? Math.max(1, Math.ceil(Math.abs(new Date(gb.checkOutDate.split('T')[0]) - new Date(gb.checkInDate.split('T')[0])) / (1000 * 60 * 60 * 24)))
+                              : stayDays;
+                            return (
+                              <div key={gIdx} className="text-[10px] text-[#2E4316] font-bold flex items-center gap-1.5 flex-wrap">
+                                <span className="text-[#1A2E05] font-black">Room {cleanRoomNumber(gb.Room?.roomNumber || gb.roomNumber)} ({gb.Room?.type || 'Standard'}):</span>
+                                <span className="bg-[#EEF4E3] px-1.5 py-0.2 rounded border border-[#D3E2BD]">{gbIn} → {gbOut}</span>
+                                <span>({gbDays} {gbDays === 1 ? 'Night' : 'Nights'})</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-[9.5px] text-[#2E4316] font-bold">{stayDays} {stayDays === 1 ? 'Night' : 'Nights'} stay ({checkInDateFormatted} to {checkOutDateFormatted})</p>
+                      )}
                     </td>
                     <td className="py-2 text-right font-mono text-[#1A2E05]">₹{formatMoney(financialData?.subTotal)}</td>
                     <td className="py-2 text-right text-[#1A2E05]">{financialData?.gstRate}%</td>

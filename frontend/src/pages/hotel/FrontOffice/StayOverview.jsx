@@ -303,12 +303,12 @@ const getShiftModalBreakdown = (roomToShift) => {
   return allItems;
 };
 
-const getRoomCardBookingTotal = (room, activeBookings) => {
+const getRoomCardBookingTotal = (room, activeBookings, activeHotel) => {
   if (room.status !== 'occupied') return null;
   const booking = activeBookings.find(b => b.roomId === room.id || (b.groupBookings && b.groupBookings.some(gb => gb.roomId === room.id)));
   if (!booking) return null;
 
-  let total = 0;
+  let baseAmount = 0;
   const groupList = (booking.groupBookings && booking.groupBookings.length > 0) ? booking.groupBookings : [booking];
 
   groupList.forEach(gb => {
@@ -319,8 +319,25 @@ const getRoomCardBookingTotal = (room, activeBookings) => {
     } else {
       gbTotal = Number(gb.totalAmount || 0);
     }
-    total += gbTotal;
+    baseAmount += gbTotal;
   });
+
+  const isGroup = booking.groupBookings && booking.groupBookings.length > 0;
+  const discount = isGroup
+    ? booking.groupBookings.reduce((sum, gb) => sum + Number(gb.discount || 0), 0)
+    : Number(booking.discount || 0);
+
+  const netBase = Math.max(0, baseAmount - discount);
+  const gstOption = booking.gstOption || 'none';
+  const gstRate = Number(booking.gstRate !== undefined && booking.gstRate !== null ? booking.gstRate : (activeHotel?.defaultGstRate !== undefined ? Number(activeHotel.defaultGstRate) : 12));
+
+  let total = netBase;
+  if (gstOption === 'exclusive') {
+    const gstAmount = gstRate > 0 ? Math.round((netBase * (gstRate / 100)) * 100) / 100 : 0;
+    total = netBase + gstAmount;
+  } else {
+    total = netBase;
+  }
 
   const foodCharges = Number(booking.foodCharges || 0);
   const extraCharges = Number(booking.extraCharges || 0);
@@ -329,12 +346,12 @@ const getRoomCardBookingTotal = (room, activeBookings) => {
   return Math.round(total * 100) / 100;
 };
 
-const getRoomCardPendingAmount = (room, activeBookings) => {
+const getRoomCardPendingAmount = (room, activeBookings, activeHotel) => {
   if (room.status !== 'occupied') return null;
   const booking = activeBookings.find(b => b.roomId === room.id || (b.groupBookings && b.groupBookings.some(gb => gb.roomId === room.id)));
   if (!booking) return null;
 
-  let total = 0;
+  let baseAmount = 0;
   const groupList = (booking.groupBookings && booking.groupBookings.length > 0) ? booking.groupBookings : [booking];
 
   groupList.forEach(gb => {
@@ -345,14 +362,31 @@ const getRoomCardPendingAmount = (room, activeBookings) => {
     } else {
       gbTotal = Number(gb.totalAmount || 0);
     }
-    total += gbTotal;
+    baseAmount += gbTotal;
   });
 
+  const isGroup = booking.groupBookings && booking.groupBookings.length > 0;
+  const discount = isGroup
+    ? booking.groupBookings.reduce((sum, gb) => sum + Number(gb.discount || 0), 0)
+    : Number(booking.discount || 0);
+
   let amountPaid = 0;
-  if (booking.groupBookings && booking.groupBookings.length > 0) {
+  if (isGroup) {
     amountPaid = booking.groupBookings.reduce((sum, gb) => sum + Number(gb.amountPaid || 0), 0);
   } else {
     amountPaid = Number(booking.amountPaid || 0);
+  }
+
+  const netBase = Math.max(0, baseAmount - discount);
+  const gstOption = booking.gstOption || 'none';
+  const gstRate = Number(booking.gstRate !== undefined && booking.gstRate !== null ? booking.gstRate : (activeHotel?.defaultGstRate !== undefined ? Number(activeHotel.defaultGstRate) : 12));
+
+  let total = netBase;
+  if (gstOption === 'exclusive') {
+    const gstAmount = gstRate > 0 ? Math.round((netBase * (gstRate / 100)) * 100) / 100 : 0;
+    total = netBase + gstAmount;
+  } else {
+    total = netBase;
   }
 
   const foodCharges = Number(booking.foodCharges || 0);
@@ -1374,8 +1408,8 @@ const StayOverview = () => {
                           onEdit={openEditRoomModal}
                           onUpdateStatus={handleUpdateRoomStatus}
                           onShiftRoom={handleOpenRoomShift}
-                          bookingTotal={getRoomCardBookingTotal(room, activeBookings)}
-                          pendingAmount={getRoomCardPendingAmount(room, activeBookings)}
+                          bookingTotal={getRoomCardBookingTotal(room, activeBookings, activeHotel)}
+                          pendingAmount={getRoomCardPendingAmount(room, activeBookings, activeHotel)}
                           extraAmount={getRoomCardExtraAmount(room, activeBookings)}
                           isMultipleRoom={checkIfMultipleRoom(room, activeBookings)}
                           todayReservation={getTodayReservation(room, activeBookings)}

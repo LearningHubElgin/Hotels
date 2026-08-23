@@ -94,7 +94,7 @@ const DashboardLayout = () => {
         />
         <main
           style={{ backgroundColor: "rgba(211, 243, 214, 0.22)" }}
-          className="flex-1 p-3 md:p-5 lg:p-6"
+          className="flex-1 p-3 sm:p-4 lg:p-4.5 pt-2 sm:pt-2.5 lg:pt-3"
         >
           <div className="max-w-[1600px] mx-auto">
             <Outlet />

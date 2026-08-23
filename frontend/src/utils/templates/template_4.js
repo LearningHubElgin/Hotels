@@ -479,6 +479,7 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
   const roomsList = [...baseBookings, ...extraChargesList];
 
   const gstRate = parseFloat(bill.gstRate !== undefined ? bill.gstRate : 5);
+  let grossBaseAmount = 0;
   let totalBaseAmount = 0;
   let totalDiscount = 0;
   let totalCgstAmount = 0;
@@ -510,7 +511,9 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
 
   roomsList.forEach((rb, idx) => {
     if (rb.isExtraCharge) {
-      totalBaseAmount += parseFloat(rb.subtotal || 0);
+      const extraSub = parseFloat(rb.subtotal || 0);
+      grossBaseAmount += extraSub;
+      totalBaseAmount += extraSub;
       totalCgstAmount += parseFloat(rb.gstAmount || 0) / 2;
       totalSgstAmount += parseFloat(rb.gstAmount || 0) / 2;
     } else {
@@ -519,6 +522,12 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
       const rbAmount = parseFloat(rb.totalAmount || 0) - earlyDeduction;
       const rbDisc = parseFloat(rb.discount || 0);
       totalDiscount += rbDisc;
+
+      let rGross = rbAmount;
+      if (gstOption === 'inclusive' && gstRate > 0) {
+        rGross = Math.round((rbAmount / (1 + gstRate / 100)) * 100) / 100;
+      }
+      grossBaseAmount += rGross;
 
       let rGrand = Math.max(0, rbAmount - rbDisc);
       let rBase = rGrand;
@@ -543,6 +552,7 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
 
   // Add early check-in charge to totals
   if (rawEarlyAmt > 0) {
+    grossBaseAmount += eSub;
     totalBaseAmount += eSub;
     totalCgstAmount += eGst / 2;
     totalSgstAmount += eGst / 2;
@@ -705,13 +715,11 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
       // Subtract early check-in charge base from primary room to avoid double-counting
       const earlyDeduction = (idx === 0 && rawEarlyAmt > 0) ? earlyDeductionForBase : 0;
       const rBaseRaw = parseFloat(rb.totalAmount || 0) - earlyDeduction;
-      const rDiscount = parseFloat(rb.discount || 0);
-      const rNet = Math.max(0, rBaseRaw - rDiscount);
+      let rGross = rBaseRaw;
       if (gstOption === 'inclusive' && gstRate > 0) {
-        rSub = Math.round((rNet / (1 + gstRate / 100)) * 100) / 100;
-      } else {
-        rSub = rNet;
+        rGross = Math.round((rBaseRaw / (1 + gstRate / 100)) * 100) / 100;
       }
+      rSub = rGross;
       let roomNights = nights;
       let isSameDayStay = false;
       if (rb.checkInDate && rb.checkOutDate) {
@@ -853,20 +861,25 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
 
   // Draw the totals box at the bottom right
   const totalsBoxLeft = margin + 112;
-  const totalsBoxHeight = 22; // Height for 4 rows (Total Amount, CGST, SGST, GRAND TOTAL)
+  const hasDiscount = totalDiscount > 0;
+  const rowCount = hasDiscount ? 5 : 4;
+  const rowHeight = 5.5;
+  const totalsBoxHeight = rowCount * rowHeight;
   const totalsBoxStartY = tableStartY + tableHeight - totalsBoxHeight;
 
   // Horizontal border lines for the totals box
   doc.setDrawColor(...redAccent);
   doc.setLineWidth(0.45);
   doc.line(totalsBoxLeft, totalsBoxStartY, pageWidth - margin, totalsBoxStartY);
-  doc.line(totalsBoxLeft, totalsBoxStartY + 5.5, pageWidth - margin, totalsBoxStartY + 5.5);
-  doc.line(totalsBoxLeft, totalsBoxStartY + 11, pageWidth - margin, totalsBoxStartY + 11);
-  doc.line(totalsBoxLeft, totalsBoxStartY + 16.5, pageWidth - margin, totalsBoxStartY + 16.5);
+  for (let i = 1; i <= rowCount; i++) {
+    doc.line(totalsBoxLeft, totalsBoxStartY + (i * rowHeight), pageWidth - margin, totalsBoxStartY + (i * rowHeight));
+  }
   // Left border of totals box
   doc.line(totalsBoxLeft, totalsBoxStartY, totalsBoxLeft, tableStartY + tableHeight);
 
   // Fill in the totals data
+  const grossRP = splitRupeesPaise(grossBaseAmount);
+  const discRP = splitRupeesPaise(totalDiscount);
   const subTotalRP = splitRupeesPaise(subTotal);
   const cgstRP = splitRupeesPaise(cgstAmount);
   const sgstRP = splitRupeesPaise(sgstAmount);
@@ -875,16 +888,35 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
   doc.setFont(fontName, "bold");
   doc.setFontSize(8);
 
-  // Total Amount Row
   let tRowY = totalsBoxStartY + 4.2;
-  doc.setTextColor(...redAccent);
-  doc.text("Total Amount", totalsBoxLeft + 2, tRowY);
-  doc.setTextColor(...darkText);
-  doc.text(subTotalRP.rupees.toString(), margin + 166, tRowY, { align: "right" });
-  doc.text(subTotalRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
+
+  if (hasDiscount) {
+    // 1. Total Amount Row (Gross before discount)
+    doc.setTextColor(...redAccent);
+    doc.text("Total Amount", totalsBoxLeft + 2, tRowY);
+    doc.setTextColor(...darkText);
+    doc.text(grossRP.rupees.toString(), margin + 166, tRowY, { align: "right" });
+    doc.text(grossRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
+
+    // 2. Discount Row
+    tRowY += rowHeight;
+    doc.setTextColor(...redAccent);
+    const discLabel = bill.discountReason ? `Discount (${bill.discountReason})` : "Discount";
+    doc.text(discLabel, totalsBoxLeft + 2, tRowY);
+    doc.setTextColor(...darkText);
+    doc.text(discRP.rupees.toString(), margin + 166, tRowY, { align: "right" });
+    doc.text(discRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
+  } else {
+    // Total Amount Row (no discount)
+    doc.setTextColor(...redAccent);
+    doc.text("Total Amount", totalsBoxLeft + 2, tRowY);
+    doc.setTextColor(...darkText);
+    doc.text(subTotalRP.rupees.toString(), margin + 166, tRowY, { align: "right" });
+    doc.text(subTotalRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
+  }
 
   // CGST Row
-  tRowY += 5.5;
+  tRowY += rowHeight;
   doc.setTextColor(...redAccent);
   doc.text(`CGST......${cgstRate.toFixed(1)}%`, totalsBoxLeft + 2, tRowY);
   doc.setTextColor(...darkText);
@@ -892,7 +924,7 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
   doc.text(cgstRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
 
   // SGST Row
-  tRowY += 5.5;
+  tRowY += rowHeight;
   doc.setTextColor(...redAccent);
   doc.text(`SGST......${sgstRate.toFixed(1)}%`, totalsBoxLeft + 2, tRowY);
   doc.setTextColor(...darkText);
@@ -900,7 +932,7 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
   doc.text(sgstRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
 
   // GRAND TOTAL Row
-  tRowY += 5.5;
+  tRowY += rowHeight;
   doc.setTextColor(...redAccent);
   doc.text("GRAND TOTAL", totalsBoxLeft + 2, tRowY);
   doc.setTextColor(...darkText);
