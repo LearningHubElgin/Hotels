@@ -11,8 +11,9 @@ import { useAuth } from '../../../context/AuthContext';
 import { cleanRoomNumber } from '../../../utils/roomHelper';
 import { generateTaxInvoice } from '../../../utils/taxInvoiceGenerator';
 import { logoBase64 } from '../../../assets/logoBase64';
-import { downloadDocumentFile } from '../../../utils/fileDownloader';
 import QuickPayModal from '../../../components/QuickPayModal';
+import RefundModal from '../../../components/RefundModal';
+import { decodeUrlId } from '../../../utils/urlSecurity';
 
 // Helper formatters
 const formatDateDMY = (dateStr) => {
@@ -46,8 +47,14 @@ const formatMoney = (val) => {
   return num.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
+const formatMoney3 = (val) => {
+  const num = Number(val || 0);
+  return num.toLocaleString('en-IN', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+};
+
 const GuestBillingDetails = () => {
   const { id } = useParams();
+  const realBookingId = useMemo(() => decodeUrlId(id), [id]);
   const navigate = useNavigate();
   const location = useLocation();
   const { activeHotel } = useAuth();
@@ -58,12 +65,14 @@ const GuestBillingDetails = () => {
 
   // Modals & previews
   const [isPayOpen, setIsPayOpen] = useState(false);
+  const [isRefundOpen, setIsRefundOpen] = useState(false);
   const [previewDoc, setPreviewDoc] = useState(null);
 
   const fetchBooking = async () => {
+    if (!realBookingId) return;
     try {
       if (!booking) setLoading(true);
-      const res = await api.get(`/bookings/${id}`);
+      const res = await api.get(`/bookings/${realBookingId}`);
       if (res.data?.data) {
         setBooking(res.data.data);
         setError(null);
@@ -79,8 +88,10 @@ const GuestBillingDetails = () => {
   };
 
   useEffect(() => {
-    fetchBooking();
-  }, [id]);
+    if (realBookingId) {
+      fetchBooking();
+    }
+  }, [realBookingId]);
 
   // Financial calculations
   const financialData = useMemo(() => {
@@ -274,6 +285,15 @@ const GuestBillingDetails = () => {
 
         {/* Quick Action Buttons */}
         <div className="flex items-center gap-2 self-end sm:self-center">
+          {financialData && (financialData.amountPaid > financialData.grandTotal + 0.1) && (
+            <button
+              onClick={() => setIsRefundOpen(true)}
+              className="flex items-center gap-1 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-black text-[11px] shadow-xs transition-all active:scale-95 cursor-pointer"
+            >
+              <RotateCcw size={12} />
+              <span>Process Refund</span>
+            </button>
+          )}
           <button
             onClick={() => setIsPayOpen(true)}
             className="flex items-center gap-1 px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg font-black text-[11px] shadow-xs transition-all active:scale-95 cursor-pointer"
@@ -587,9 +607,9 @@ const GuestBillingDetails = () => {
                     <td className="py-2 text-right font-mono text-[#1A2E05]">₹{formatMoney(financialData?.subTotal)}</td>
                     <td className="py-2 text-right text-[#1A2E05]">{financialData?.gstRate}%</td>
                     <td className="py-2 text-right font-mono text-blue-700">
-                      ₹{formatMoney(financialData?.roomGstAmount)}
-                      <span className="block text-[8.5px] text-[#2E4316] font-bold">
-                        (SGST ₹{formatMoney(financialData?.roomGstAmount / 2)} + CGST ₹{formatMoney(financialData?.roomGstAmount / 2)})
+                      ₹{formatMoney3(financialData?.roomGstAmount)}
+                      <span className="block text-[10.5px] text-[#2E4316] font-bold mt-0.5 whitespace-nowrap">
+                        (SGST ₹{formatMoney3(financialData?.roomGstAmount / 2)} + CGST ₹{formatMoney3(financialData?.roomGstAmount / 2)})
                       </span>
                     </td>
                     <td className="py-2 text-right font-mono font-black text-[#1A2E05]">
@@ -606,7 +626,14 @@ const GuestBillingDetails = () => {
                       </td>
                       <td className="py-2 text-right font-mono text-[#1A2E05]">₹{formatMoney(ec.subtotal || ec.baseAmount || ec.amount)}</td>
                       <td className="py-2 text-right text-[#1A2E05]">{ec.gstRate || 0}%</td>
-                      <td className="py-2 text-right font-mono text-blue-700">₹{formatMoney(ec.gstAmount || 0)}</td>
+                      <td className="py-2 text-right font-mono text-blue-700">
+                        ₹{formatMoney3(ec.gstAmount || 0)}
+                        {Number(ec.gstAmount || 0) > 0 && (
+                          <span className="block text-[10.5px] text-[#2E4316] font-bold mt-0.5 whitespace-nowrap">
+                            (SGST ₹{formatMoney3((ec.gstAmount || 0) / 2)} + CGST ₹{formatMoney3((ec.gstAmount || 0) / 2)})
+                          </span>
+                        )}
+                      </td>
                       <td className="py-2 text-right font-mono font-black text-[#1A2E05]">₹{formatMoney(ec.grandTotal || ec.amount)}</td>
                     </tr>
                   ))}
@@ -632,7 +659,7 @@ const GuestBillingDetails = () => {
                 <div className="flex items-center gap-3 text-[10.5px] font-bold text-[#2E4316]">
                   <span>Total Taxable: <strong className="text-[#1A2E05]">₹{formatMoney(financialData?.subTotal)}</strong></span>
                   <span>•</span>
-                  <span>Total GST: <strong className="text-[#1A2E05]">₹{formatMoney(financialData?.totalGstAmount)}</strong></span>
+                  <span>Total GST: <strong className="text-[#1A2E05]">₹{formatMoney3(financialData?.totalGstAmount)}</strong></span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-[11px] font-black text-[#2E4316] uppercase">Grand Total:</span>
@@ -727,6 +754,16 @@ const GuestBillingDetails = () => {
         <QuickPayModal
           isOpen={isPayOpen}
           onClose={() => setIsPayOpen(false)}
+          bill={booking}
+          onSave={fetchBooking}
+        />
+      )}
+
+      {/* Refund Modal */}
+      {isRefundOpen && (
+        <RefundModal
+          isOpen={isRefundOpen}
+          onClose={() => setIsRefundOpen(false)}
           bill={booking}
           onSave={fetchBooking}
         />

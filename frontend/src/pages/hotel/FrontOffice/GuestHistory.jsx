@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import api, { getUploadUrl } from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
+import { encodeUrlId } from '../../../utils/urlSecurity';
 import { generateTaxInvoice } from '../../../utils/taxInvoiceGenerator';
 import { generateCheckInVoucher } from '../../../utils/pdfGenerator';
 import { downloadDocumentFile } from '../../../utils/fileDownloader';
@@ -899,7 +900,7 @@ const GuestHistory = () => {
                       if (['INPUT', 'BUTTON', 'A', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || e.target.closest('button') || e.target.closest('input')) {
                         return;
                       }
-                      navigate(`/dashboard/front-office/guest-billing/${item.id}`, { state: { bill: item } });
+                      navigate(`/dashboard/front-office/guest-billing/${encodeUrlId(item.id)}`, { state: { bill: item } });
                     }}
                     className="hover:bg-[#F5F7F0] transition-colors group cursor-pointer"
                     title="Click to view full guest billing & stay details"

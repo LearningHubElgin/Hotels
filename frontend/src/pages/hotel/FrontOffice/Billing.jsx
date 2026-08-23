@@ -15,6 +15,8 @@ import { logoBase64 } from '../../../assets/logoBase64';
 import { useAuth } from '../../../context/AuthContext';
 import GstCalculator from '../../../components/GstCalculator';
 import QuickPayModal from '../../../components/QuickPayModal';
+import RefundModal from '../../../components/RefundModal';
+import { encodeUrlId } from '../../../utils/urlSecurity';
 
 
 
@@ -1708,155 +1710,7 @@ const ViewBillModal = ({ isOpen, onClose, bill, onDownload }) => {
   );
 };
 
-// QuickPayModal is imported from components/QuickPayModal.jsx
-
-const RefundModal = ({ isOpen, onClose, bill, onSave }) => {
-  const { activeHotel } = useAuth();
-  const [refundMode, setRefundMode] = useState('Cash');
-  const [refundBank, setRefundBank] = useState('');
-
-  const banksList = activeHotel && activeHotel.onlinePaymentBanks
-    ? activeHotel.onlinePaymentBanks.split(',').map(b => b.trim()).filter(Boolean)
-    : [];
-
-  useEffect(() => {
-    if (isOpen && bill) {
-      document.body.style.overflow = 'hidden';
-      setRefundMode('Cash');
-      setRefundBank(banksList[0] || '');
-    } else {
-      document.body.style.overflow = 'unset';
-    }
-    return () => {
-      document.body.style.overflow = 'unset';
-    };
-  }, [isOpen, bill]);
-
-  if (!isOpen || !bill) return null;
-
-  const calc = calculateBillGSTAndTotals(bill, activeHotel);
-  const grandTotal = calc.grandTotal;
-
-  let parsedHistory = [];
-  try {
-    if (bill.paymentHistory) {
-      parsedHistory = JSON.parse(bill.paymentHistory);
-    }
-  } catch (err) {
-    console.error(err);
-  }
-
-  const totalPaid = calc.amountPaid || parsedHistory.reduce((sum, h) => sum + Number(h.amount || 0), 0);
-  const overpaidAmount = Math.max(0, totalPaid - grandTotal);
-
-  const handleRefund = async () => {
-    if (overpaidAmount <= 0.1) {
-      alert("No overpayment to refund");
-      return;
-    }
-
-    const today = new Date();
-    const currentDate = today.toLocaleDateString('en-GB').replace(/\//g, '-');
-    const currentTime = today.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
-
-    const refundTx = {
-      amount: -Number(overpaidAmount.toFixed(2)),
-      date: currentDate,
-      time: currentTime,
-      paymentMode: refundMode,
-      paymentBank: refundMode === 'Online' ? refundBank : null
-    };
-
-    const updatedHistory = [...parsedHistory, refundTx];
-    const newTotalPaid = updatedHistory.reduce((sum, h) => sum + Number(h.amount || 0), 0);
-    const pendingDue = grandTotal - newTotalPaid;
-    const paymentStatus = pendingDue <= 0.1 ? 'Paid' : (newTotalPaid === 0 ? 'Pending' : 'Partial');
-
-    try {
-      await api.put(`/bookings/${bill.id}`, {
-        paymentHistory: JSON.stringify(updatedHistory),
-        amountPaid: newTotalPaid,
-        paymentStatus
-      });
-      onSave();
-      onClose();
-    } catch (err) {
-      console.error("Error processing refund", err);
-      alert("Failed to process refund");
-    }
-  };
-
-  return createPortal(
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto animate-fade-in">
-      <div className="w-full max-w-md bg-white shadow-2xl rounded-3xl overflow-hidden border border-[#DDE5D0] p-6 animate-slide-up space-y-5">
-        <div>
-          <span className="text-[10px] font-black text-[#84A63C] bg-[#84A63C]/10 border border-[#84A63C]/20 px-2.5 py-1 rounded-full uppercase tracking-wider">Refund Overpayment</span>
-          <h2 className="text-base font-black text-[#1A2E05] mt-2 leading-tight">Process Refund for {bill.guestName}</h2>
-          <p className="text-xs font-bold text-[#7A8A6A] mt-1">
-            Overpayment of <strong className="text-[#84A63C] font-black">₹{overpaidAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong> will be recorded as a refund transaction.
-          </p>
-        </div>
-
-        <div className="space-y-4">
-          <div>
-            <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-2">Select Refund Payment Mode</label>
-            <div className="grid grid-cols-2 gap-3">
-              {[
-                { mode: 'Cash', label: 'Cash', icon: Wallet },
-                { mode: 'Online', label: 'Online / Bank', icon: CreditCard }
-              ].map(({ mode, label, icon: Icon }) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => setRefundMode(mode)}
-                  className={`flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-black transition-all duration-200 border shadow-sm active:scale-[0.98] ${
-                    refundMode === mode
-                      ? 'bg-[#1A2E05] border-[#1A2E05] text-white shadow-md shadow-[#1A2E05]/15 ring-2 ring-[#1A2E05]/20'
-                      : 'bg-[#F5F7F0] border-[#DDE5D0] text-[#4A5E38] hover:bg-[#EBF0E1] hover:text-[#1A2E05]'
-                  }`}
-                >
-                  <Icon size={16} className={refundMode === mode ? 'text-[#84A63C]' : 'text-[#7A8A6A]'} />
-                  <span>{label}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {refundMode === 'Online' && banksList.length > 0 && (
-            <div>
-              <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-1.5">Select Bank / Wallet</label>
-              <select
-                value={refundBank}
-                onChange={(e) => setRefundBank(e.target.value)}
-                className="w-full px-3.5 py-2.5 bg-[#F5F7F0] border border-[#DDE5D0] rounded-xl text-xs font-bold text-[#1A2E05] focus:outline-none focus:bg-white focus:border-[#84A63C] transition-all"
-              >
-                {banksList.map(b => (
-                  <option key={b} value={b}>{b}</option>
-                ))}
-              </select>
-            </div>
-          )}
-        </div>
-
-        <div className="flex gap-3 pt-2">
-          <button
-            onClick={onClose}
-            className="flex-1 py-2.5 border border-[#DDE5D0] text-[#7A8A6A] hover:bg-[#F0F3E8] hover:text-[#1A2E05] rounded-xl text-xs font-black transition-all"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleRefund}
-            className="flex-1 py-2.5 bg-[#84A63C] text-white font-black text-xs rounded-xl shadow-md shadow-[#84A63C]/25 hover:bg-[#739331] active:scale-[0.98] transition-all flex items-center justify-center gap-1.5"
-          >
-            <RotateCcw size={14} /> Refund ₹{overpaidAmount.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body
-  );
-};
+// QuickPayModal and RefundModal are imported from components
 
 // Format a "HH:MM" 24-hr string to "HH:MM AM/PM"
 const formatTime12hr = (timeStr, fallback = '12:00 PM') => {
@@ -3069,10 +2923,15 @@ const Billing = () => {
                           if (dragDistanceRef.current > 5) {
                             return;
                           }
-                          if (['INPUT', 'BUTTON', 'A', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || e.target.closest('button') || e.target.closest('input')) {
+                          if (
+                            ['INPUT', 'BUTTON', 'A', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) ||
+                            e.target.closest('button') ||
+                            e.target.closest('input') ||
+                            e.target.closest('[data-no-row-click="true"]')
+                          ) {
                             return;
                           }
-                          navigate(`/dashboard/front-office/guest-billing/${bill.id}`, { state: { bill } });
+                          navigate(`/dashboard/front-office/guest-billing/${encodeUrlId(bill.id)}`, { state: { bill } });
                         }}
                         className="hover:bg-[#F0F3E8]/60 transition-colors group cursor-pointer"
                         title="Click to view full guest billing & stay details"
@@ -3229,38 +3088,74 @@ const Billing = () => {
                         <td className="px-2 py-2 text-xs font-bold text-[#1A2E05]">
                           ₹{grandTotal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </td>
-                        <td className="px-2 py-2">
+                        <td className="px-2 py-2" data-no-row-click="true">
                           <div className="flex flex-col gap-0.5 items-start">
                             <span
                               className="text-xs font-bold text-green-600 cursor-pointer hover:underline"
-                              onClick={() => { setSelectedBill(bill); setIsPayOpen(true); }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedBill(bill);
+                                setIsPayOpen(true);
+                              }}
                               title="Click to open Quick Pay ledger"
                             >
                               Paid: ₹{amountPaid.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </span>
                             <span
                               className={`${pendingClass} cursor-pointer hover:opacity-80 active:scale-95 transition-all`}
-                              onClick={() => {
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedBill(bill);
                                 if (pendingDue < -0.1) {
-                                  setSelectedBill(bill);
                                   setIsRefundOpen(true);
                                 } else {
-                                  setSelectedBill(bill);
                                   setIsPayOpen(true);
                                 }
                               }}
-                              title="Click to open Quick Pay ledger"
+                              title={pendingDue < -0.1 ? "Click to process customer refund" : "Click to open Quick Pay ledger"}
                             >
                               {pendingDueStr}
                             </span>
                           </div>
                         </td>
-                        <td className="px-2 py-2 text-right">
+                        <td className="px-2 py-2 text-right" data-no-row-click="true">
                           <div className="flex gap-1.5 justify-end items-center">
-                            <button onClick={() => { setSelectedBill(bill); setIsViewOpen(true); }} className="p-1.5 text-[#7A8A6A] hover:text-green-600 hover:bg-white rounded-lg transition-all border border-[#DDE5D0] shadow-2xs cursor-pointer" title="View Invoice"><Eye size={16} /></button>
-                            <button onClick={() => { setSelectedBill(bill); setIsEditOpen(true); }} className="p-1.5 text-[#7A8A6A] hover:text-blue-600 hover:bg-white rounded-lg transition-all border border-[#DDE5D0] shadow-2xs cursor-pointer" title="Edit Billing"><Edit size={16} /></button>
-                            <button onClick={() => { setSelectedBill(bill); setIsPayOpen(true); }} className="px-2 py-1 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded-lg transition-all border border-amber-300 flex items-center gap-1.5 text-[11px] font-bold shadow-2xs cursor-pointer" title="Quick Pay & Ledger"><Wallet size={13} /> Collect</button>
-                            <button onClick={() => handleDownloadInvoice(bill)} className="p-1.5 text-[#7A8A6A] hover:text-[#84A63C] hover:bg-white rounded-lg transition-all border border-[#DDE5D0] shadow-2xs cursor-pointer" title="Download PDF"><Download size={16} /></button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setSelectedBill(bill); setIsViewOpen(true); }}
+                              className="p-1.5 text-[#7A8A6A] hover:text-green-600 hover:bg-white rounded-lg transition-all border border-[#DDE5D0] shadow-2xs cursor-pointer"
+                              title="View Invoice"
+                            >
+                              <Eye size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setSelectedBill(bill); setIsEditOpen(true); }}
+                              className="p-1.5 text-[#7A8A6A] hover:text-blue-600 hover:bg-white rounded-lg transition-all border border-[#DDE5D0] shadow-2xs cursor-pointer"
+                              title="Edit Billing"
+                            >
+                              <Edit size={16} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedBill(bill);
+                                setIsPayOpen(true);
+                              }}
+                              className="px-2 py-1 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded-lg transition-all border border-amber-300 flex items-center gap-1.5 text-[11px] font-bold shadow-2xs cursor-pointer"
+                              title="Quick Pay & Ledger"
+                            >
+                              <Wallet size={13} /> Collect
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); handleDownloadInvoice(bill); }}
+                              className="p-1.5 text-[#7A8A6A] hover:text-[#84A63C] hover:bg-white rounded-lg transition-all border border-[#DDE5D0] shadow-2xs cursor-pointer"
+                              title="Download PDF"
+                            >
+                              <Download size={16} />
+                            </button>
                           </div>
                         </td>
                       </tr>
