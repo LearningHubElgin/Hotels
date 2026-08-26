@@ -618,11 +618,12 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
                 <input
                   type="number"
                   step="any"
+                  onWheel={(e) => e.target.blur()}
                   placeholder={isRowEditable ? "Enter amount to pay..." : "Billing locked (Fully paid)"}
                   value={payAmount}
                   onChange={(e) => setPayAmount(e.target.value)}
                   disabled={!isRowEditable}
-                  className="w-full px-3.5 py-2.5 bg-[#F5F7F0] border border-[#DDE5D0] rounded-xl text-sm sm:text-base font-bold text-[#1A2E05] focus:outline-none focus:bg-white focus:border-[#84A63C] transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                  className="w-full px-3.5 py-2.5 bg-[#F5F7F0] border border-[#DDE5D0] rounded-xl text-sm sm:text-base font-bold text-[#1A2E05] focus:outline-none focus:bg-white focus:border-[#84A63C] transition-all disabled:opacity-60 disabled:cursor-not-allowed [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                 />
                 {/* Auto-split / allocation preview */}
                 {(() => {
@@ -814,9 +815,10 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
                             <input
                               type="number"
                               step="any"
+                              onWheel={(e) => e.target.blur()}
                               value={editTxData.amount}
                               onChange={(e) => setEditTxData(prev => ({ ...prev, amount: e.target.value }))}
-                              className="w-full px-2.5 py-1.5 bg-[#F5F7F0] border border-[#DDE5D0] rounded-xl text-xs font-bold"
+                              className="w-full px-2.5 py-1.5 bg-[#F5F7F0] border border-[#DDE5D0] rounded-xl text-xs font-bold [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                             />
                           </div>
                           <div>

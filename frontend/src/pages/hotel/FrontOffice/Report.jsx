@@ -14,6 +14,17 @@ const parseLocalDate = (dateStr) => {
   return new Date(y, m - 1, d);
 };
 
+const formatDateDMY = (dateStr) => {
+  if (!dateStr || dateStr === 'N/A') return 'N/A';
+  const plain = String(dateStr).split('T')[0];
+  const parts = plain.split('-');
+  if (parts.length === 3) {
+    if (parts[0].length === 4) return `${parts[2]}-${parts[1]}-${parts[0]}`;
+    return `${parts[0]}-${parts[1]}-${parts[2]}`;
+  }
+  return dateStr;
+};
+
 const BILLING_FETCH_LIMIT = 10000;
 
 const getBookingStayDays = (b) => {
@@ -728,11 +739,11 @@ const Report = () => {
   });
 
   const getPeriodTitleStr = () => {
-    if (activeTab === 'daily') return `Daily Report (${selectedDate})`;
-    if (activeTab === 'weekly') return `Weekly Report (${selectedWeekStart} to ${selectedWeekEnd})`;
+    if (activeTab === 'daily') return `Daily Report (${formatDateDMY(selectedDate)})`;
+    if (activeTab === 'weekly') return `Weekly Report (${formatDateDMY(selectedWeekStart)} to ${formatDateDMY(selectedWeekEnd)})`;
     if (activeTab === 'monthly') return `Monthly Report (${months[selectedMonth]} ${selectedYear})`;
     if (activeTab === 'yearly') return `Yearly Report (${selectedYear})`;
-    if (activeTab === 'custom') return `Custom Range Report (${startDate} to ${endDate})`;
+    if (activeTab === 'custom') return `Custom Range Report (${formatDateDMY(startDate)} to ${formatDateDMY(endDate)})`;
     return 'All-Time Report';
   };
 
@@ -743,7 +754,7 @@ const Report = () => {
       const dateVal = isDaily ? selectedDate : (b.checkInDate || b.createdAt || 'N/A');
 
       return {
-        date: String(dateVal).split('T')[0],
+        date: formatDateDMY(dateVal),
         billNo: b.invoiceNumber || String(b.id || ''),
         guestName: b.guestName || 'Guest',
         company: b.companyName || b.company || b.Guest?.companyName || b.Guest?.company || 'N/A',
@@ -779,7 +790,8 @@ const Report = () => {
 
     sortedBookings.forEach(b => {
       const pFin = getBookingPeriodFinancials(b, activeTab, periodInfo);
-      const dateStr = isDaily ? selectedDate : String(b.checkInDate || b.createdAt || 'N/A').split('T')[0];
+      const rawDate = isDaily ? selectedDate : (b.checkInDate || b.createdAt || 'N/A');
+      const dateStr = formatDateDMY(rawDate);
       const escapedName = `"${(b.guestName || '').replace(/"/g, '""')}"`;
       const companyVal = b.companyName || b.company || b.Guest?.companyName || b.Guest?.company || 'N/A';
       const escapedCompany = `"${companyVal.replace(/"/g, '""')}"`;
@@ -1033,10 +1045,10 @@ const Report = () => {
                       setSortOrder('asc');
                     }
                   }}
-                  className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider cursor-pointer hover:text-[#1A2E05] transition-colors select-none"
+                  className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider cursor-pointer hover:text-[#1A2E05] transition-colors select-none whitespace-nowrap"
                   title="Click to sort by Billing Number"
                 >
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 whitespace-nowrap">
                     <span>Billing No.</span>
                     {sortField === 'billingNo' ? (
                       sortOrder === 'asc' ? (
@@ -1076,17 +1088,17 @@ const Report = () => {
                     </div>
                   </th>
                 )}
-                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider">Guest Name</th>
-                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider">Company</th>
-                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider">Room Number</th>
-                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-right">Room Rate</th>
-                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-center">Days</th>
-                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-right">Charges</th>
-                <th className="px-4 py-2.5 text-[10px] font-black text-[#5C7A1F] uppercase tracking-wider text-right">Extra Service / Food</th>
-                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-right">CGST</th>
-                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-right">SGST</th>
-                <th className="px-4 py-2.5 text-[10px] font-black text-[#84A63C] uppercase tracking-wider text-right">Total GST</th>
-                <th className="px-4 py-2.5 text-[10px] font-black text-[#1A2E05] uppercase tracking-wider text-right">Total Amount</th>
+                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider min-w-[130px] max-w-[180px]">Guest Name</th>
+                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider min-w-[120px] max-w-[170px]">Company</th>
+                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider whitespace-nowrap">Room Number</th>
+                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-right whitespace-nowrap">Room Rate</th>
+                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-center whitespace-nowrap">Days</th>
+                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-right whitespace-nowrap">Charges</th>
+                <th className="px-4 py-2.5 text-[10px] font-black text-[#5C7A1F] uppercase tracking-wider text-right max-w-[95px] whitespace-normal leading-tight">Extra Service / Food</th>
+                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-right whitespace-nowrap">CGST</th>
+                <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-right whitespace-nowrap">SGST</th>
+                <th className="px-4 py-2.5 text-[10px] font-black text-[#84A63C] uppercase tracking-wider text-right whitespace-nowrap">Total GST</th>
+                <th className="px-4 py-2.5 text-[10px] font-black text-[#1A2E05] uppercase tracking-wider text-right whitespace-nowrap">Total Amount</th>
                 <th
                   onClick={() => {
                     if (sortField === 'date') {
@@ -1096,10 +1108,10 @@ const Report = () => {
                       setSortOrder('asc');
                     }
                   }}
-                  className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider cursor-pointer hover:text-[#1A2E05] transition-colors select-none"
+                  className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider cursor-pointer hover:text-[#1A2E05] transition-colors select-none whitespace-nowrap"
                   title="Click to sort by Date"
                 >
-                  <div className="flex items-center gap-1 justify-end">
+                  <div className="flex items-center gap-1 justify-end whitespace-nowrap">
                     <span>Date</span>
                     {sortField === 'date' ? (
                       sortOrder === 'asc' ? (
@@ -1125,7 +1137,8 @@ const Report = () => {
                 sortedBookings.map((b, idx) => {
                   const pFin = getBookingPeriodFinancials(b, activeTab, periodInfo);
                   const isDaily = activeTab === 'daily';
-                  const dateStr = isDaily ? selectedDate : String(b.checkInDate || b.createdAt || 'N/A').split('T')[0];
+                  const rawDateVal = isDaily ? selectedDate : (b.checkInDate || b.createdAt || 'N/A');
+                  const dateStr = formatDateDMY(rawDateVal);
                   const rawRoomStr = b.roomNumbersDisplay || (b.roomNumbers ? b.roomNumbers.join(', ') : (b.Room?.roomNumber || 'N/A'));
                   const roomStr = rawRoomStr.toLowerCase().includes('room') ? rawRoomStr : `Room ${rawRoomStr}`;
                   const catRate = b.pricePerNight || b.roomRate || (b.totalAmount && pFin.totalDays ? (b.totalAmount / pFin.totalDays) : (b.Room?.pricePerNight || 0));
@@ -1133,7 +1146,7 @@ const Report = () => {
 
                   return (
                     <tr key={idx} className="hover:bg-[#F5F7F0]/40 transition-colors">
-                      <td className="px-4 py-2 font-bold text-[#1A2E05]">{b.invoiceNumber || b.id || 'N/A'}</td>
+                      <td className="px-4 py-2 font-bold text-[#1A2E05] whitespace-nowrap">{b.invoiceNumber || b.id || 'N/A'}</td>
                       {activeHotel?.enableRegistrationNumber === true && (
                         <td className="px-4 py-2 font-bold text-[#1A2E05] whitespace-nowrap">
                           <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#EEF4E3] border border-[#D3E2BD] text-[#1A2E05] whitespace-nowrap">
@@ -1141,18 +1154,18 @@ const Report = () => {
                           </span>
                         </td>
                       )}
-                      <td className="px-4 py-2 font-bold text-[#1A2E05]">{b.guestName || 'Guest'}</td>
-                      <td className="px-4 py-2 font-semibold text-[#4A5E38]">{companyStr}</td>
-                      <td className="px-4 py-2 font-bold text-[#1A2E05]">{roomStr}</td>
-                      <td className="px-4 py-2 text-right font-medium">{catRate ? formatCurrency(catRate) : 'N/A'}</td>
-                      <td className="px-4 py-2 text-center font-bold">{pFin.stayDays}</td>
-                      <td className="px-4 py-2 text-right font-medium">{formatCurrency(pFin.baseAmount)}</td>
-                      <td className="px-4 py-2 text-right font-semibold text-[#5C7A1F]">{formatCurrency(pFin.extraSubTotal)}</td>
-                      <td className="px-4 py-2 text-right font-medium">{formatCurrency3(pFin.cgst)}</td>
-                      <td className="px-4 py-2 text-right font-medium">{formatCurrency3(pFin.sgst)}</td>
-                      <td className="px-4 py-2 text-right font-bold text-[#84A63C]">{formatCurrency3(pFin.totalGst)}</td>
-                      <td className="px-4 py-2 text-right font-black text-[#1A2E05]">{formatCurrency(pFin.grandTotal)}</td>
-                      <td className="px-4 py-2 text-right font-semibold text-[#7A8A6A]">{dateStr}</td>
+                      <td className="px-4 py-2 font-bold text-[#1A2E05] min-w-[130px] max-w-[180px] whitespace-normal break-words leading-tight">{b.guestName || 'Guest'}</td>
+                      <td className="px-4 py-2 font-semibold text-[#4A5E38] max-w-[170px] min-w-[120px] whitespace-normal break-words leading-tight">{companyStr}</td>
+                      <td className="px-4 py-2 font-bold text-[#1A2E05] whitespace-nowrap">{roomStr}</td>
+                      <td className="px-4 py-2 text-right font-medium whitespace-nowrap">{catRate ? formatCurrency(catRate) : 'N/A'}</td>
+                      <td className="px-4 py-2 text-center font-bold whitespace-nowrap">{pFin.stayDays}</td>
+                      <td className="px-4 py-2 text-right font-medium whitespace-nowrap">{formatCurrency(pFin.baseAmount)}</td>
+                      <td className="px-4 py-2 text-right font-semibold text-[#5C7A1F] whitespace-nowrap">{formatCurrency(pFin.extraSubTotal)}</td>
+                      <td className="px-4 py-2 text-right font-medium whitespace-nowrap">{formatCurrency3(pFin.cgst)}</td>
+                      <td className="px-4 py-2 text-right font-medium whitespace-nowrap">{formatCurrency3(pFin.sgst)}</td>
+                      <td className="px-4 py-2 text-right font-bold text-[#84A63C] whitespace-nowrap">{formatCurrency3(pFin.totalGst)}</td>
+                      <td className="px-4 py-2 text-right font-black text-[#1A2E05] whitespace-nowrap">{formatCurrency(pFin.grandTotal)}</td>
+                      <td className="px-4 py-2 text-right font-semibold text-[#7A8A6A] whitespace-nowrap">{dateStr}</td>
                     </tr>
                   );
                 })

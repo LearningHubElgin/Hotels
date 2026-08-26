@@ -969,6 +969,11 @@ exports.updateBooking = async (req, res, next) => {
 
           await gb.update(gbUpdates);
         }
+
+        // Distributed across group already — prevent individualUpdates from overwriting primary booking with total group values
+        delete individualUpdates.totalAmount;
+        delete individualUpdates.amountPaid;
+        delete individualUpdates.discount;
       }
 
       if (Object.keys(individualUpdates).length > 0) {
