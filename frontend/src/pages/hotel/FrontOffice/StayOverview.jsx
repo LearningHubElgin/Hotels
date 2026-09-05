@@ -13,6 +13,7 @@ import GuestDetailModal from '../../../components/GuestDetailModal';
 import CheckoutConfirmModal from '../../../components/CheckoutConfirmModal';
 import EarlyCheckinWarningModal from '../../../components/EarlyCheckinWarningModal';
 import QuickCheckInModal from '../../../components/QuickCheckInModal';
+import ShiftRoomModal from '../../../components/ShiftRoomModal';
 import { useAuth } from '../../../context/AuthContext';
 import { cleanRoomNumber } from '../../../utils/roomHelper';
 
@@ -61,21 +62,43 @@ const formatMoney = (val) => {
     : num.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
+const getActiveBookingForOccupiedRoom = (room, activeBookings) => {
+  if (!room || room.status !== 'occupied' || !activeBookings || !activeBookings.length) return null;
+  // An occupied room must only be matched to a currently 'Active' booking, not a future 'Confirmed' reservation
+  const active = activeBookings.find(b =>
+    b.status === 'Active' && (
+      Number(b.roomId) === Number(room.id) ||
+      (b.groupBookings && b.groupBookings.some(gb => Number(gb.roomId) === Number(room.id)))
+    )
+  );
+  if (active) return active;
+
+  // Fallback: match by guestName if room has guestName and booking is Active
+  if (room.guestName) {
+    const byName = activeBookings.find(b =>
+      b.status === 'Active' &&
+      b.guestName && b.guestName.trim().toLowerCase() === room.guestName.trim().toLowerCase()
+    );
+    if (byName) return byName;
+  }
+  return null;
+};
+
 const checkIfMultipleRoom = (room, activeBookings) => {
   if (room.status !== 'occupied') return false;
-  const booking = activeBookings.find(b => b.roomId === room.id || (b.groupBookings && b.groupBookings.some(gb => gb.roomId === room.id)));
+  const booking = getActiveBookingForOccupiedRoom(room, activeBookings);
   return !!(booking && booking.groupBookings && booking.groupBookings.length > 1);
 };
 
 const getActiveGuestName = (room, activeBookings) => {
   if (room.status !== 'occupied') return null;
-  const booking = activeBookings.find(b => b.roomId === room.id || (b.groupBookings && b.groupBookings.some(gb => gb.roomId === room.id)));
-  return booking ? booking.guestName : null;
+  const booking = getActiveBookingForOccupiedRoom(room, activeBookings);
+  return booking ? booking.guestName : (room.guestName || null);
 };
 
 const getRoomCardExtraAmount = (room, activeBookings) => {
   if (room.status !== 'occupied') return 0;
-  const booking = activeBookings.find(b => b.roomId === room.id || (b.groupBookings && b.groupBookings.some(gb => gb.roomId === room.id)));
+  const booking = getActiveBookingForOccupiedRoom(room, activeBookings);
   if (!booking) return 0;
 
   const foodCharges = Number(booking.foodCharges || 0);
@@ -171,19 +194,8 @@ const getShiftModalBreakdown = (roomToShift) => {
     const cOut = new Date(checkOutStr);
     const totalStayDays = Math.max(1, Math.ceil(Math.abs(cOut - cIn) / (1000 * 60 * 60 * 24)));
 
-    let shiftDateStr = b.shiftDate || (b.updatedAt ? b.updatedAt.split('T')[0] : '');
-    const todayStr = new Date().toISOString().split('T')[0];
-
-    if (!shiftDateStr || shiftDateStr < checkInStr || shiftDateStr > checkOutStr) {
-      if (todayStr > checkInStr && todayStr <= checkOutStr) shiftDateStr = todayStr;
-      else shiftDateStr = new Date(cIn.getTime() + Math.max(1, Math.floor(totalStayDays / 2)) * 86400000).toISOString().split('T')[0];
-    }
-
-    let prevDays = 0;
-    if (shiftDateStr > checkInStr) {
-      prevDays = Math.min(totalStayDays - 1, Math.ceil(Math.abs(new Date(shiftDateStr) - cIn) / (1000 * 60 * 60 * 24)));
-    }
-    const curDays = Math.max(1, totalStayDays - prevDays);
+    const rawShiftDates = b.shiftDate || (b.updatedAt ? b.updatedAt.split('T')[0] : '');
+    const shiftDatesList = String(rawShiftDates || '').split(/→|->|,|>/).map(s => s.trim().split('T')[0]).filter(Boolean);
 
     const prevRatesList = String(b.previousRoomRate || '').split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
     const defaultPrevRate = prevRatesList.length > 0
@@ -222,6 +234,7 @@ const getShiftModalBreakdown = (roomToShift) => {
     const items = [];
     const rawShiftTimesStr = b.shiftTime || b.roomShiftTimes || '';
     const shiftTimesList = String(rawShiftTimesStr).split(/→|->|,|>/).map(s => s.trim()).filter(Boolean);
+    const fallbackShiftTime = shiftTimesList.length > 0 ? shiftTimesList[shiftTimesList.length - 1] : actualShiftTime;
 
     allRoomsInOrder.forEach((rmNum, idx) => {
       const isCurrent = idx === allRoomsInOrder.length - 1;
@@ -229,41 +242,61 @@ const getShiftModalBreakdown = (roomToShift) => {
       let startStr = '', endStr = '';
 
       if (idx === 0) {
-        days = prevDays;
+        const firstShiftD = shiftDatesList[0] || checkInStr;
+        if (firstShiftD && checkInStr && firstShiftD > checkInStr) {
+          days = Math.min(totalStayDays - 1, Math.ceil(Math.abs(new Date(firstShiftD) - cIn) / (1000 * 60 * 60 * 24)));
+        } else {
+          days = 0;
+        }
         startStr = formatShortWithTime(b.checkInDate, b.checkInTime, '12:00 PM');
-        const firstShiftT = shiftTimesList[0] || actualShiftTime;
-        endStr = firstShiftT ? formatShortWithTime(shiftDateStr, firstShiftT, '02:00 PM') : '';
+        const firstShiftT = shiftTimesList[0] || fallbackShiftTime;
+        endStr = firstShiftT ? formatShortWithTime(firstShiftD, firstShiftT, '02:00 PM') : '';
       } else {
-        const prevStepTime = shiftTimesList[idx - 1] || actualShiftTime;
-        startStr = formatShortWithTime(shiftDateStr, prevStepTime, '02:00 PM');
+        const prevStepTime = shiftTimesList[idx - 1] || shiftTimesList[0] || fallbackShiftTime;
+        const prevStepDate = shiftDatesList[idx - 1] || shiftDatesList[0] || checkInStr;
+        startStr = formatShortWithTime(prevStepDate, prevStepTime, '02:00 PM');
 
         if (!isCurrent) {
-          days = 0;
-          const thisStepTime = shiftTimesList[idx] || actualShiftTime;
-          endStr = formatShortWithTime(shiftDateStr, thisStepTime, '02:00 PM');
+          const thisStepTime = shiftTimesList[idx] || prevStepTime;
+          const thisStepDate = shiftDatesList[idx] || prevStepDate;
+          if (thisStepDate && prevStepDate && thisStepDate > prevStepDate) {
+            days = Math.max(0, Math.ceil(Math.abs(new Date(thisStepDate) - new Date(prevStepDate)) / (1000 * 60 * 60 * 24)));
+          } else {
+            days = 0;
+          }
+          endStr = formatShortWithTime(thisStepDate, thisStepTime, '02:00 PM');
         } else {
-          days = curDays;
+          const lastShiftD = shiftDatesList[shiftDatesList.length - 1] || shiftDatesList[0] || checkInStr;
+          if (checkOutStr && lastShiftD && checkOutStr > lastShiftD) {
+            days = Math.ceil(Math.abs(new Date(checkOutStr) - new Date(lastShiftD)) / (1000 * 60 * 60 * 24));
+          } else {
+            days = 0;
+          }
           endStr = formatShortWithTime(b.checkOutDate, b.checkOutTime, '11:00 AM');
         }
       }
 
+      const sameDayOptList = String(b.sameDayChargeOption || 'no_charge').split(/→|->|,|>/).map(s => s.trim());
+      const stepSameDayOpt = sameDayOptList[idx] || sameDayOptList[0] || 'no_charge';
       const isSameDayShift = (days === 0);
       let rate = 0;
       let total = 0;
 
       if (isSameDayShift) {
         days = 0;
-        const pRate = prevRatesList[idx] !== undefined && !isNaN(prevRatesList[idx]) ? prevRatesList[idx] : 0;
+        const pRate = prevRatesList[idx] !== undefined && !isNaN(prevRatesList[idx]) ? prevRatesList[idx] : defaultPrevRate;
         rate = pRate;
-        total = pRate;
+        const hasShiftDayCharge = (stepSameDayOpt === 'charge_previous');
+        total = hasShiftDayCharge ? pRate : 0;
       } else if (!isCurrent) {
         rate = prevRatesList[idx] !== undefined && !isNaN(prevRatesList[idx]) ? prevRatesList[idx] : defaultPrevRate;
-        total = days * rate;
+        const shiftDayExtra = (stepSameDayOpt === 'charge_previous') ? rate : 0;
+        total = (days * rate) + shiftDayExtra;
       }
 
-      const dateRangeStr = (startStr && endStr && startStr !== endStr)
+      const dateRangeStr = (startStr && endStr)
         ? `${startStr} ──> ${endStr}`
-        : startStr;
+        : (startStr || endStr);
 
       items.push({
         roomNumber: rmNum,
@@ -282,16 +315,17 @@ const getShiftModalBreakdown = (roomToShift) => {
     const curIdx = items.findIndex(it => it.isCurrent);
     if (curIdx !== -1) {
       const curDaysCount = items[curIdx].days;
-      const calcRem = roomTotalSum - prevTotalSum;
-      let curRate = (curDaysCount > 0 && calcRem > 0)
-        ? (calcRem / curDaysCount)
-        : (Number(b.Room?.pricePerNight || 0) || defaultPrevRate);
-      let curTotal = curDaysCount * curRate;
-
-      if (curTotal === 0 && roomTotalSum > prevTotalSum) {
-        curTotal = roomTotalSum - prevTotalSum;
-        curRate = curDaysCount > 0 ? (curTotal / curDaysCount) : curRate;
+      let curRate = Number(b.pricePerNight || 0);
+      if (!curRate && b.totalAmount && Number(b.totalAmount) > 0) {
+        const rem = Number(b.totalAmount) - prevTotalSum;
+        if (rem > 0 && curDaysCount > 0) {
+          curRate = Math.round((rem / curDaysCount) * 100) / 100;
+        }
       }
+      if (!curRate) {
+        curRate = Number(b.Room?.pricePerNight || defaultPrevRate || 0);
+      }
+      let curTotal = curDaysCount * curRate;
 
       items[curIdx].total = curTotal;
       items[curIdx].rate = curRate;
@@ -305,7 +339,7 @@ const getShiftModalBreakdown = (roomToShift) => {
 
 const getRoomCardBookingTotal = (room, activeBookings, activeHotel) => {
   if (room.status !== 'occupied') return null;
-  const booking = activeBookings.find(b => b.roomId === room.id || (b.groupBookings && b.groupBookings.some(gb => gb.roomId === room.id)));
+  const booking = getActiveBookingForOccupiedRoom(room, activeBookings);
   if (!booking) return null;
 
   let baseAmount = 0;
@@ -315,7 +349,10 @@ const getRoomCardBookingTotal = (room, activeBookings, activeHotel) => {
     let gbTotal = 0;
     if (gb.previousRoomNumber) {
       const bd = getShiftModalBreakdown({ booking: gb });
-      gbTotal = bd.reduce((sum, it) => sum + Number(it.total || 0), 0);
+      const bdTotal = bd.reduce((sum, it) => sum + Number(it.total || 0), 0);
+      gbTotal = bdTotal > 0 ? bdTotal : Number(gb.totalAmount || 0);
+    } else if (gb.totalAmount !== undefined && gb.totalAmount !== null && Number(gb.totalAmount) > 0) {
+      gbTotal = Number(gb.totalAmount);
     } else {
       gbTotal = Number(gb.totalAmount || 0);
     }
@@ -348,7 +385,7 @@ const getRoomCardBookingTotal = (room, activeBookings, activeHotel) => {
 
 const getRoomCardPendingAmount = (room, activeBookings, activeHotel) => {
   if (room.status !== 'occupied') return null;
-  const booking = activeBookings.find(b => b.roomId === room.id || (b.groupBookings && b.groupBookings.some(gb => gb.roomId === room.id)));
+  const booking = getActiveBookingForOccupiedRoom(room, activeBookings);
   if (!booking) return null;
 
   let baseAmount = 0;
@@ -358,7 +395,10 @@ const getRoomCardPendingAmount = (room, activeBookings, activeHotel) => {
     let gbTotal = 0;
     if (gb.previousRoomNumber) {
       const bd = getShiftModalBreakdown({ booking: gb });
-      gbTotal = bd.reduce((sum, it) => sum + Number(it.total || 0), 0);
+      const bdTotal = bd.reduce((sum, it) => sum + Number(it.total || 0), 0);
+      gbTotal = bdTotal > 0 ? bdTotal : Number(gb.totalAmount || 0);
+    } else if (gb.totalAmount !== undefined && gb.totalAmount !== null && Number(gb.totalAmount) > 0) {
+      gbTotal = Number(gb.totalAmount);
     } else {
       gbTotal = Number(gb.totalAmount || 0);
     }
@@ -371,7 +411,23 @@ const getRoomCardPendingAmount = (room, activeBookings, activeHotel) => {
     : Number(booking.discount || 0);
 
   let amountPaid = 0;
-  if (isGroup) {
+  let parsedHistory = [];
+  try {
+    if (booking.paymentHistory) {
+      parsedHistory = typeof booking.paymentHistory === 'string' ? JSON.parse(booking.paymentHistory) : booking.paymentHistory;
+    } else if (isGroup) {
+      const bWithHist = booking.groupBookings.find(b => b.paymentHistory);
+      if (bWithHist) {
+        parsedHistory = typeof bWithHist.paymentHistory === 'string' ? JSON.parse(bWithHist.paymentHistory) : bWithHist.paymentHistory;
+      }
+    }
+  } catch (e) {
+    parsedHistory = [];
+  }
+
+  if (Array.isArray(parsedHistory) && parsedHistory.length > 0) {
+    amountPaid = parsedHistory.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  } else if (isGroup) {
     amountPaid = booking.groupBookings.reduce((sum, gb) => sum + Number(gb.amountPaid || 0), 0);
   } else {
     amountPaid = Number(booking.amountPaid || 0);
@@ -452,7 +508,7 @@ const RoomCard = ({ room, onClick, onDownload, onDelete, onEdit, onUpdateStatus,
   const customColors = getCustomRoomColors(activeHotel);
 
   const getCustomCardStyle = (status) => {
-    if (todayReservation) {
+    if (todayReservation && status === 'available') {
       return {
         backgroundColor: customColors.reservedBg,
         color: customColors.reservedText,
@@ -878,13 +934,9 @@ const StayOverview = () => {
   const [quickCheckInBooking, setQuickCheckInBooking] = useState(null);
   const [isQuickCheckInOpen, setIsQuickCheckInOpen] = useState(false);
   const [roomToShift, setRoomToShift] = useState(null);
-  const [selectedNewRoomId, setSelectedNewRoomId] = useState('');
-  const [newRoomPriceInput, setNewRoomPriceInput] = useState('');
-  const [sameDayChargeOption, setSameDayChargeOption] = useState('charge_previous'); // 'charge_previous' | 'no_charge'
-  const [shiftingLoading, setShiftingLoading] = useState(false);
 
   const handleOpenRoomShift = async (room) => {
-    let booking = activeBookings.find(b => b.roomId === room.id || (b.groupBookings && b.groupBookings.some(gb => gb.roomId === room.id)));
+    let booking = getActiveBookingForOccupiedRoom(room, activeBookings);
     if (!booking) {
       try {
         const response = await api.get(`/bookings/room/${room.id}`);
@@ -895,69 +947,13 @@ const StayOverview = () => {
     }
 
     if (booking && booking.groupBookings && booking.groupBookings.length > 0) {
-      const matchingGb = booking.groupBookings.find(gb => gb.roomId === room.id);
+      const matchingGb = booking.groupBookings.find(gb => Number(gb.roomId) === Number(room.id));
       if (matchingGb) {
         booking = matchingGb;
       }
     }
 
     setRoomToShift({ room, booking });
-    setSelectedNewRoomId('');
-  };
-
-  const handleConfirmRoomShift = async () => {
-    if (!roomToShift || !selectedNewRoomId) return;
-    const targetBooking = roomToShift.booking;
-    if (!targetBooking) {
-      alert("Could not find active booking record for this room.");
-      return;
-    }
-
-    setShiftingLoading(true);
-    try {
-      const oldRoomId = roomToShift.room.id;
-      const newRoomId = Number(selectedNewRoomId);
-      const breakdown = getShiftModalBreakdown(roomToShift);
-      const currentStep = breakdown ? breakdown.find(item => item.isCurrent) : null;
-      const actualOldRate = currentStep && currentStep.rate !== undefined && currentStep.rate !== null && !isNaN(Number(currentStep.rate))
-        ? Number(currentStep.rate)
-        : Number(roomToShift.room.pricePerNight || 0);
-
-      const currentPrevNumStr = targetBooking.previousRoomNumber;
-      const oldRoomNumStr = String(roomToShift.room.roomNumber);
-      let fullPrevNum = oldRoomNumStr;
-      if (currentPrevNumStr) {
-        const parts = currentPrevNumStr.split(/→|->|,|>/).map(s => s.trim()).filter(Boolean);
-        if (parts[parts.length - 1] !== oldRoomNumStr) {
-          fullPrevNum = `${currentPrevNumStr} → ${oldRoomNumStr}`;
-        } else {
-          fullPrevNum = currentPrevNumStr;
-        }
-      }
-
-      await api.put(`/bookings/${targetBooking.id}`, {
-        roomId: newRoomId,
-        previousRoomId: oldRoomId,
-        previousRoomNumber: fullPrevNum,
-        previousRoomRate: actualOldRate,
-        previousRoomType: roomToShift.room.type || roomToShift.room.roomType,
-        newRoomPrice: newRoomPriceInput !== '' ? Number(newRoomPriceInput) : undefined,
-        shiftDate: new Date().toISOString().split('T')[0],
-        shiftTime: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
-        sameDayChargeOption
-      });
-
-      setRoomToShift(null);
-      setSelectedNewRoomId('');
-      setNewRoomPriceInput('');
-      await fetchRooms();
-      await fetchActiveBookings();
-    } catch (error) {
-      console.error('Error shifting room:', error);
-      alert(error.response?.data?.message || 'Failed to shift room');
-    } finally {
-      setShiftingLoading(false);
-    }
   };
 
   const executeQuickCheckIn = async (bookingId, checkInDate, checkInTime) => {
@@ -1095,15 +1091,19 @@ const StayOverview = () => {
       setIsBookingModalOpen(true);
     } else if (room.status === 'occupied') {
       setSelectedRoom(room);
+      const preloadedBooking = getActiveBookingForOccupiedRoom(room, activeBookings);
+      if (preloadedBooking) {
+        setSelectedActiveBooking(preloadedBooking);
+      }
       setIsGuestDetailModalOpen(true);
       setLoadingGuestDetail(true);
       try {
         const response = await api.get(`/bookings/room/${room.id}`);
         const booking = response.data.data;
-        setSelectedActiveBooking(booking || null);
+        setSelectedActiveBooking(booking || preloadedBooking || null);
       } catch (error) {
         console.error('Error fetching active booking:', error);
-        setSelectedActiveBooking(null);
+        if (!preloadedBooking) setSelectedActiveBooking(null);
       } finally {
         setLoadingGuestDetail(false);
       }
@@ -1146,10 +1146,12 @@ const StayOverview = () => {
       } else {
         await api.post('/bookings', bookingData);
       }
-      await fetchRooms();
-      await fetchActiveBookings();
       setIsBookingModalOpen(false);
       setSelectedActiveBooking(null);
+      await Promise.all([
+        fetchRooms(),
+        fetchActiveBookings()
+      ]);
     } catch (error) {
       if (error.response?.status === 409) {
         setConflictData(error.response.data.conflict);
@@ -1223,8 +1225,12 @@ const StayOverview = () => {
     }
   };
 
-  const handleDownloadVoucher = async (roomId) => {
+  const handleDownloadVoucher = async (roomId, targetBooking = null) => {
     try {
+      if (targetBooking) {
+        await generateCheckInVoucher(targetBooking);
+        return;
+      }
       const response = await api.get(`/bookings/room/${roomId}`);
       if (response.data.data) {
         await generateCheckInVoucher(response.data.data);
@@ -1412,7 +1418,7 @@ const StayOverview = () => {
                           pendingAmount={getRoomCardPendingAmount(room, activeBookings, activeHotel)}
                           extraAmount={getRoomCardExtraAmount(room, activeBookings)}
                           isMultipleRoom={checkIfMultipleRoom(room, activeBookings)}
-                          todayReservation={getTodayReservation(room, activeBookings)}
+                          todayReservation={room.status === 'available' ? getTodayReservation(room, activeBookings) : null}
                           activeGuestName={getActiveGuestName(room, activeBookings)}
                         />
                       ))}
@@ -1591,7 +1597,7 @@ const StayOverview = () => {
                             <Info size={14} />
                           </button>
                           <button
-                            onClick={() => handleDownloadVoucher(booking.roomId)}
+                            onClick={() => handleDownloadVoucher(booking.roomId, booking)}
                             className="p-2 text-[#7A8A6A] hover:text-[#84A63C] hover:bg-[#F0F3E8] rounded-xl transition-all border border-[#DDE5D0] shadow-sm inline-flex items-center"
                             title="Download Check-In Voucher"
                           >
@@ -1693,18 +1699,11 @@ const StayOverview = () => {
         }}
         onEdit={handleGuestEdit}
         onDeleteSuccess={async () => {
+          setIsGuestDetailModalOpen(false);
+          setSelectedActiveBooking(null);
+          setSelectedRoom(null);
           await fetchRooms();
           await fetchActiveBookings();
-          if (selectedRoom?.id) {
-            try {
-              const response = await api.get(`/bookings/room/${selectedRoom.id}`);
-              if (response.data.data) {
-                setSelectedActiveBooking(response.data.data);
-              }
-            } catch (err) {
-              console.error('Error refreshing active booking details:', err);
-            }
-          }
         }}
       />
       {checkoutData && (
@@ -1757,213 +1756,16 @@ const StayOverview = () => {
       )}
 
       {/* Room Shift Modal */}
-      {roomToShift && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-white rounded-3xl border border-[#DDE5D0] shadow-2xl max-w-md w-full p-6 space-y-5 animate-slide-up relative">
-            <div className="flex items-center justify-between border-b border-[#DDE5D0] pb-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-[#84A63C]/10 text-[#84A63C] rounded-2xl">
-                  <ArrowLeftRight size={22} />
-                </div>
-                <div>
-                  <h3 className="text-lg font-black text-[#1A2E05]">Shift Room</h3>
-                  <p className="text-xs font-semibold text-[#4A5E38]">Change assigned room for active guest</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setRoomToShift(null)}
-                className="p-2 text-[#7A8A6A] hover:text-[#1A2E05] hover:bg-[#F0F3E8] rounded-xl transition-all"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="bg-[#F5F7F0] p-4 rounded-2xl border border-[#DDE5D0] space-y-2.5">
-              <div className="flex justify-between items-center text-xs">
-                <span className="font-bold text-[#4A5E38]">Guest Name:</span>
-                <span className="font-black text-[#1A2E05]">
-                  {roomToShift.booking?.guestName || roomToShift.room.guestName || 'Active Guest'}
-                </span>
-              </div>
-              <div className="flex justify-between items-center text-xs">
-                <span className="font-bold text-[#4A5E38]">Current Room:</span>
-                <span className="font-black text-[#1A2E05] px-2.5 py-0.5 bg-white rounded-lg border border-[#DDE5D0]">
-                  Room {roomToShift.room.roomNumber} ({roomToShift.room.type || 'Standard'})
-                </span>
-              </div>
-
-              {/* Detailed Breakdown per Room */}
-              {(() => {
-                const breakdown = getShiftModalBreakdown(roomToShift);
-                if (!breakdown || breakdown.length === 0) return null;
-                return (
-                  <div className="pt-2 border-t border-[#DDE5D0]/60 space-y-2">
-                    <span className="text-[10px] font-black uppercase text-[#4A5E38] tracking-wider block">Stay & Billing Breakdown per Room:</span>
-                    <div className="space-y-1.5">
-                      {breakdown.map((item, idx) => {
-                        if (item.isSameDayShift || item.days === 0) {
-                          return (
-                            <div key={idx} className="bg-white p-2.5 rounded-xl border border-amber-200/80 flex items-center justify-between text-xs shadow-2xs">
-                              <div className="flex items-center gap-2">
-                                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-200">
-                                  Room {item.roomNumber} (Prev)
-                                </span>
-                                <span className="text-[11px] font-semibold text-gray-600">
-                                  {item.startStr || item.dateRangeStr} <span className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 font-bold ml-1">Same-Day Shift</span>
-                                </span>
-                              </div>
-                              <span className="font-extrabold text-gray-700 text-xs">
-                                {item.total > 0 ? `₹${formatMoney(item.total)}` : '₹0.00 (No Charge)'}
-                              </span>
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <div key={idx} className="bg-white p-2.5 rounded-xl border border-[#DDE5D0] flex flex-col sm:flex-row sm:items-center justify-between gap-1 shadow-2xs">
-                            <div className="flex items-center gap-2">
-                              <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${item.isCurrent ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-amber-100 text-amber-900 border border-amber-200'
-                                }`}>
-                                Room {item.roomNumber} ({item.isCurrent ? 'Current' : 'Prev'})
-                              </span>
-                              {item.dateRangeStr && (
-                                <span className="text-[11px] font-semibold text-[#4A5E38]">
-                                  {item.dateRangeStr} ({item.days} {item.days === 1 ? 'Night' : 'Nights'})
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center justify-between sm:justify-end gap-3 text-xs border-t sm:border-t-0 pt-1 sm:pt-0 border-gray-100">
-                              <span className="text-[11px] font-semibold text-[#7A8A6A]">₹{formatMoney(item.rate)}/night</span>
-                              <span className="font-extrabold text-[#1A2E05]">₹{formatMoney(item.total)}</span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-black text-[#4A5E38] uppercase tracking-wider block">
-                Select New Room *
-              </label>
-              <select
-                value={selectedNewRoomId}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setSelectedNewRoomId(val);
-                  const selRoom = roomsByFloor.flatMap(f => f.rooms).find(r => r.id === Number(val));
-                  if (selRoom) {
-                    setNewRoomPriceInput(String(selRoom.pricePerNight || ''));
-                  }
-                }}
-                className="w-full px-3.5 py-2.5 bg-[#FBFDF8] border border-[#DDE5D0] rounded-xl text-xs sm:text-sm font-bold text-[#1A2E05] focus:outline-none focus:border-[#84A63C] cursor-pointer"
-              >
-                <option value="">-- Select Available Room --</option>
-                {roomsByFloor.flatMap(f => f.rooms).map(r => (
-                  <option
-                    key={r.id}
-                    value={r.id}
-                    disabled={r.id === roomToShift.room.id || r.status !== 'available'}
-                  >
-                    Room {r.roomNumber} - {r.type} (₹{r.pricePerNight}/night) {r.id === roomToShift.room.id ? '🔵 Current Room' : r.status === 'available' ? '✅ Available' : `🔴 ${r.status}`}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {selectedNewRoomId && (
-              <div className="space-y-3 animate-fade-in">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-black text-[#4A5E38] uppercase tracking-wider block">
-                    New Room Price (₹ / Night)
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={newRoomPriceInput}
-                    onChange={(e) => setNewRoomPriceInput(e.target.value)}
-                    placeholder="Enter new room price per night"
-                    className="w-full px-3.5 py-2.5 bg-[#FBFDF8] border border-[#DDE5D0] rounded-xl text-xs sm:text-sm font-bold text-[#1A2E05] focus:outline-none focus:border-[#84A63C]"
-                  />
-                </div>
-
-                <div className="space-y-1.5 pt-1">
-                  <label className="text-xs font-black text-[#4A5E38] uppercase tracking-wider block">
-                    Previous Room Billing Option (Shift Day) *
-                  </label>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSameDayChargeOption('no_charge')}
-                      className={`p-3 rounded-2xl border text-left transition-all flex flex-col justify-between gap-1.5 cursor-pointer ${sameDayChargeOption === 'no_charge'
-                          ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-500/20 text-emerald-950 font-bold shadow-xs'
-                          : 'bg-white border-[#DDE5D0] text-gray-700 hover:bg-[#F5F7F0]'
-                        }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-extrabold text-xs text-emerald-900">🆓 No Charge</span>
-                        {sameDayChargeOption === 'no_charge' && (
-                          <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
-                        )}
-                      </div>
-                      <span className="text-[10px] text-gray-500 font-semibold leading-tight">
-                        Previous Room {roomToShift?.room?.roomNumber} is <strong>₹0.00 (No Charge)</strong> for shift day.
-                      </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setSameDayChargeOption('charge_previous')}
-                      className={`p-3 rounded-2xl border text-left transition-all flex flex-col justify-between gap-1.5 cursor-pointer ${sameDayChargeOption === 'charge_previous'
-                          ? 'bg-emerald-50 border-emerald-500 ring-2 ring-emerald-500/20 text-emerald-950 font-bold shadow-xs'
-                          : 'bg-white border-[#DDE5D0] text-gray-700 hover:bg-[#F5F7F0]'
-                        }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-extrabold text-xs text-emerald-900">💵 Charge Previous Room Rate</span>
-                        {sameDayChargeOption === 'charge_previous' && (
-                          <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
-                        )}
-                      </div>
-                      <span className="text-[10px] text-gray-500 font-semibold leading-tight">
-                        Charge Previous Room {roomToShift?.room?.roomNumber} at rate (<strong>₹{roomToShift?.room?.pricePerNight || '0'}/night</strong>).
-                      </span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#DDE5D0]">
-              <button
-                type="button"
-                onClick={() => {
-                  setRoomToShift(null);
-                  setSelectedNewRoomId('');
-                  setNewRoomPriceInput('');
-                }}
-                className="px-5 py-2.5 border border-[#DDE5D0] text-[#4A5E38] hover:bg-[#F0F3E8] rounded-xl text-xs font-bold transition-all"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={!selectedNewRoomId || Number(selectedNewRoomId) === roomToShift.room.id || shiftingLoading}
-                onClick={handleConfirmRoomShift}
-                className="px-5 py-2.5 bg-[#84A63C] text-white rounded-xl text-xs font-black hover:bg-[#6c8a2f] transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm"
-              >
-                {shiftingLoading ? <Loader2 size={14} className="animate-spin" /> : <ArrowLeftRight size={14} />}
-                <span>Confirm Room Shift</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ShiftRoomModal
+        isOpen={Boolean(roomToShift)}
+        onClose={() => setRoomToShift(null)}
+        roomToShift={roomToShift}
+        roomsByFloor={roomsByFloor}
+        onShiftSuccess={async () => {
+          await fetchRooms();
+          await fetchActiveBookings();
+        }}
+      />
 
       <QuickCheckInModal
         isOpen={isQuickCheckInOpen}

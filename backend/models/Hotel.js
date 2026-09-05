@@ -76,6 +76,10 @@ const Hotel = sequelize.define('Hotel', {
     type: DataTypes.DECIMAL(10, 2),
     defaultValue: 0.00
   },
+  bankOpeningBalances: {
+    type: DataTypes.TEXT,
+    allowNull: true
+  },
   lockOpeningBalance: {
     type: DataTypes.BOOLEAN,
     defaultValue: false
@@ -129,6 +133,10 @@ const Hotel = sequelize.define('Hotel', {
     defaultValue: false
   },
   enableRegistrationNumber: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  },
+  enablePaymentSerialNumber: {
     type: DataTypes.BOOLEAN,
     defaultValue: false
   },

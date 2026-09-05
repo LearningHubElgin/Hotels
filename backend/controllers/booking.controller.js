@@ -132,6 +132,66 @@ exports.createBooking = async (req, res, next) => {
     let accumulatedAmountPaid = 0;
     let accumulatedDiscount = 0;
 
+    let initialPaymentHistory = req.body.paymentHistory || null;
+    if (!initialPaymentHistory && Number(amountPaid) > 0) {
+      let serialNumber = null;
+      if (hotel?.enablePaymentSerialNumber) {
+        const allBookings = await Booking.findAll({
+          where: { hotelId: req.user.hotelId },
+          attributes: ['id', 'amountPaid', 'paymentHistory']
+        });
+        let maxSeq = 0;
+        let totalCount = 0;
+        allBookings.forEach(b => {
+          let hist = [];
+          try {
+            if (b.paymentHistory) hist = JSON.parse(b.paymentHistory);
+          } catch (e) { }
+          if (Array.isArray(hist) && hist.length > 0) {
+            hist.forEach(h => {
+              totalCount++;
+              if (h.serialNumber) {
+                const num = parseInt(String(h.serialNumber).match(/(\d+)$/)?.[1] || '0', 10);
+                if (num > maxSeq) maxSeq = num;
+              }
+            });
+          } else if (Number(b.amountPaid || 0) > 0) {
+            totalCount++;
+          }
+        });
+        serialNumber = String(Math.max(maxSeq, totalCount) + 1);
+      }
+
+      const checkInDateFormatted = checkInDate ? checkInDate.split('T')[0].split('-').reverse().join('-') : new Date().toLocaleDateString('en-GB').replace(/\//g, '-');
+      const timeFormatted = checkInTime || '12:00 PM';
+      initialPaymentHistory = JSON.stringify([{
+        amount: Number(amountPaid),
+        date: checkInDateFormatted,
+        time: timeFormatted,
+        paymentMode: paymentMode || 'Cash',
+        paymentBank: paymentBank || null,
+        serialNumber: serialNumber || undefined
+      }]);
+    }
+
+    let finalRegNo = req.body.registrationNumber || null;
+    if (!finalRegNo && hotel?.enableRegistrationNumber) {
+      const lastBookingWithReg = await Booking.findOne({
+        where: {
+          hotelId: req.user.hotelId,
+          registrationNumber: { [Op.ne]: null },
+          status: { [Op.ne]: 'Cancelled' }
+        },
+        order: [['createdAt', 'DESC'], ['id', 'DESC']]
+      });
+      let nextRegIdx = 1;
+      if (lastBookingWithReg?.registrationNumber) {
+        const match = String(lastBookingWithReg.registrationNumber).match(/(\d+)$/);
+        if (match) nextRegIdx = parseInt(match[1], 10) + 1;
+      }
+      finalRegNo = `REG-${String(nextRegIdx).padStart(3, '0')}`;
+    }
+
     for (let i = 0; i < rooms.length; i++) {
       const room = rooms[i];
       const roomPrice = (customRates[room.id] !== undefined && customRates[room.id] !== '')
@@ -168,7 +228,7 @@ exports.createBooking = async (req, res, next) => {
         roomId: room.id,
         groupBookingId,
         invoiceNumber: generatedInvoiceNumber,
-        registrationNumber: registrationNumber || null,
+        registrationNumber: finalRegNo,
         guestName, fatherName, email, phone, nationality, gender, age,
         address, bookingType, numberOfGuests, idProof, idType,
         aadhaarFront, aadhaarBack, signature,
@@ -184,7 +244,7 @@ exports.createBooking = async (req, res, next) => {
         paymentStatus, guestGst, hsnCode: bookingHsnCode, gstRate: bookingGstRate, gstOption: gstOption || 'exclusive', paymentMode,
         paymentBank: paymentBank || null,
         status: initialStatus,
-        paymentHistory: req.body.paymentHistory,
+        paymentHistory: initialPaymentHistory,
         hotelId: req.user.hotelId,
         passportNumber, passportExpiry, visaNumber, visaType, visaExpiry, country,
         arrivalFrom, nextDestination, purposeOfVisit, extraGuests,
@@ -238,7 +298,8 @@ exports.getRoomBooking = async (req, res, next) => {
   try {
     const booking = await Booking.findOne({
       where: { roomId: req.params.roomId, status: 'Active', hotelId: req.user.hotelId },
-      include: [{ model: Room, attributes: ['roomNumber', 'type', 'pricePerNight'] }]
+      include: [{ model: Room, attributes: ['roomNumber', 'type', 'pricePerNight'] }],
+      order: [['id', 'DESC']]
     });
     if (!booking) {
       return res.status(200).json({ success: true, data: null });
@@ -432,10 +493,52 @@ exports.getActiveBookings = async (req, res, next) => {
       whereClause[Op.or] = [
         { guestName: { [Op.like]: `%${search}%` } },
         { phone: { [Op.like]: `%${search}%` } },
+        { registrationNumber: { [Op.like]: `%${search}%` } },
         { previousRoomNumber: { [Op.like]: `%${cleanSearch}%` } },
         { '$Room.roomNumber$': { [Op.like]: `%${cleanSearch}%` } }
       ];
     }
+
+    // Lazy fallback generator for registration numbers if any booking lacks one
+    let globalRegMap = null;
+    const computeGlobalRegMap = async () => {
+      if (globalRegMap) return globalRegMap;
+      const globalBookingsAll = await Booking.findAll({
+        where: { hotelId: req.user.hotelId, status: { [Op.ne]: 'Cancelled' } },
+        attributes: ['id', 'groupBookingId', 'registrationNumber', 'createdAt'],
+        order: [['createdAt', 'ASC'], ['id', 'ASC']]
+      });
+
+      const uniqueGroups = [];
+      const groupMap = new Map();
+
+      for (const b of globalBookingsAll) {
+        const groupKey = b.groupBookingId || `single-${b.id}`;
+        if (!groupMap.has(groupKey)) {
+          groupMap.set(groupKey, b);
+          uniqueGroups.push({ groupKey, primaryBooking: b });
+        }
+      }
+
+      globalRegMap = new Map();
+      uniqueGroups.forEach((g, idx) => {
+        const b = g.primaryBooking;
+        const reg = (b.registrationNumber && String(b.registrationNumber).trim())
+          ? String(b.registrationNumber).trim()
+          : `REG-${String(idx + 1).padStart(3, '0')}`;
+
+        if (b.groupBookingId) {
+          globalBookingsAll.forEach(gb => {
+            if (gb.groupBookingId === b.groupBookingId) {
+              globalRegMap.set(gb.id, reg);
+            }
+          });
+        } else {
+          globalRegMap.set(b.id, reg);
+        }
+      });
+      return globalRegMap;
+    };
 
     if (page && limit) {
       const pageNum = parseInt(page) || 1;
@@ -460,17 +563,26 @@ exports.getActiveBookings = async (req, res, next) => {
       const [batchGroupBookings, batchKots, batchExtraCharges] = await Promise.all([
         pageGroupIds.length > 0
           ? Booking.findAll({
-              where: { groupBookingId: { [Op.in]: pageGroupIds }, hotelId: req.user.hotelId },
-              include: [{ model: Room, attributes: ['roomNumber', 'type', 'pricePerNight'] }]
-            })
+            where: { groupBookingId: { [Op.in]: pageGroupIds }, hotelId: req.user.hotelId },
+            include: [{ model: Room, attributes: ['roomNumber', 'type', 'pricePerNight'] }]
+          })
           : [],
-        Kot.findAll({
-          where: { bookingId: { [Op.in]: pageIds }, paymentMode: 'Room Charge', status: { [Op.ne]: 'Cancelled' }, hotelId: req.user.hotelId }
-        }),
-        ExtraCharge.findAll({
-          where: { hotelId: req.user.hotelId }
-        })
+        pageIds.length > 0
+          ? Kot.findAll({
+            where: { bookingId: { [Op.in]: pageIds }, paymentMode: 'Room Charge', status: { [Op.ne]: 'Cancelled' }, hotelId: req.user.hotelId }
+          })
+          : [],
+        pageIds.length > 0
+          ? ExtraCharge.findAll({
+            where: { bookingId: { [Op.in]: pageIds }, hotelId: req.user.hotelId }
+          })
+          : []
       ]);
+
+      const needsFallbackReg = rows.some(b => !b.registrationNumber || !String(b.registrationNumber).trim());
+      if (needsFallbackReg) {
+        await computeGlobalRegMap();
+      }
 
       const mappedData = rows.map((b) => {
         const groupBookings = b.groupBookingId
@@ -488,8 +600,15 @@ exports.getActiveBookings = async (req, res, next) => {
         const extraCharges = batchExtraCharges.filter(ec => bookingIds.includes(ec.bookingId));
         const extraTotal = extraCharges.reduce((sum, ec) => sum + parseFloat(ec.grandTotal || 0), 0);
 
+        const defaultRegNo = b.status === 'Cancelled' ? null : ((globalRegMap && (globalRegMap.get(b.id) || (b.groupBookingId ? globalRegMap.get(b.groupBookingId) : null))) || 'REG-001');
+
         return {
           ...b.toJSON(),
+          registrationNumber: b.status === 'Cancelled'
+            ? null
+            : ((b.registrationNumber && String(b.registrationNumber).trim() && String(b.registrationNumber).trim() !== '-')
+              ? String(b.registrationNumber).trim()
+              : defaultRegNo),
           groupBookings,
           kots,
           extraChargesList: extraCharges,
@@ -520,17 +639,26 @@ exports.getActiveBookings = async (req, res, next) => {
       const [batchGroupBookings, batchKots, batchExtraCharges] = await Promise.all([
         bGroupIds.length > 0
           ? Booking.findAll({
-              where: { groupBookingId: { [Op.in]: bGroupIds }, hotelId: req.user.hotelId },
-              include: [{ model: Room, attributes: ['roomNumber', 'type', 'pricePerNight'] }]
-            })
+            where: { groupBookingId: { [Op.in]: bGroupIds }, hotelId: req.user.hotelId },
+            include: [{ model: Room, attributes: ['roomNumber', 'type', 'pricePerNight'] }]
+          })
           : [],
-        Kot.findAll({
-          where: { bookingId: { [Op.in]: bIds }, paymentMode: 'Room Charge', status: { [Op.ne]: 'Cancelled' }, hotelId: req.user.hotelId }
-        }),
-        ExtraCharge.findAll({
-          where: { hotelId: req.user.hotelId }
-        })
+        bIds.length > 0
+          ? Kot.findAll({
+            where: { bookingId: { [Op.in]: bIds }, paymentMode: 'Room Charge', status: { [Op.ne]: 'Cancelled' }, hotelId: req.user.hotelId }
+          })
+          : [],
+        bIds.length > 0
+          ? ExtraCharge.findAll({
+            where: { bookingId: { [Op.in]: bIds }, hotelId: req.user.hotelId }
+          })
+          : []
       ]);
+
+      const needsFallbackReg = bookings.some(b => !b.registrationNumber || !String(b.registrationNumber).trim());
+      if (needsFallbackReg) {
+        await computeGlobalRegMap();
+      }
 
       const mappedData = bookings.map((b) => {
         const groupBookings = b.groupBookingId
@@ -548,8 +676,15 @@ exports.getActiveBookings = async (req, res, next) => {
         const extraCharges = batchExtraCharges.filter(ec => bookingIds.includes(ec.bookingId));
         const extraTotal = extraCharges.reduce((sum, ec) => sum + parseFloat(ec.grandTotal || 0), 0);
 
+        const defaultRegNo = b.status === 'Cancelled' ? null : ((globalRegMap && (globalRegMap.get(b.id) || (b.groupBookingId ? globalRegMap.get(b.groupBookingId) : null))) || 'REG-001');
+
         return {
           ...b.toJSON(),
+          registrationNumber: b.status === 'Cancelled'
+            ? null
+            : ((b.registrationNumber && String(b.registrationNumber).trim() && String(b.registrationNumber).trim() !== '-')
+              ? String(b.registrationNumber).trim()
+              : defaultRegNo),
           groupBookings,
           kots,
           extraChargesList: extraCharges,
@@ -662,13 +797,14 @@ exports.updateBooking = async (req, res, next) => {
       }
     }
 
-    // Verify invoice number uniqueness across the hotel
+    // Verify invoice number uniqueness across the hotel (excluding cancelled bookings)
     if (req.body.invoiceNumber && typeof req.body.invoiceNumber === 'string' && req.body.invoiceNumber.trim() !== '') {
       const targetInvoiceNo = req.body.invoiceNumber.trim();
       const duplicateWhere = {
         hotelId: req.user.hotelId,
         invoiceNumber: targetInvoiceNo,
-        id: { [Op.ne]: booking.id }
+        id: { [Op.ne]: booking.id },
+        status: { [Op.ne]: 'Cancelled' }
       };
 
       if (booking.groupBookingId) {
@@ -679,7 +815,7 @@ exports.updateBooking = async (req, res, next) => {
       if (existingInvoice) {
         return res.status(400).json({
           success: false,
-          message: `Invoice number '${targetInvoiceNo}' already exists for another booking.`
+          message: `Invoice number '${targetInvoiceNo}' already exists for another active booking.`
         });
       }
     }
@@ -774,6 +910,61 @@ exports.updateBooking = async (req, res, next) => {
       req.body.amountPaid = parseFloat(req.body.amountPaid) || 0;
     }
 
+    const sanitizeDateVal = (val) => {
+      if (!val || val === '' || val === 'Invalid date' || val === 'null' || val === 'undefined') return null;
+      if (val instanceof Date && !isNaN(val.getTime())) {
+        return val.toISOString().split('T')[0];
+      }
+      if (typeof val === 'string') {
+        let clean = val.split('T')[0].trim();
+        if (clean === '' || clean === 'Invalid date' || clean === 'null' || clean === 'undefined') return null;
+        if (/^\d{2}-\d{2}-\d{4}$/.test(clean)) {
+          const [d, m, y] = clean.split('-');
+          clean = `${y}-${m}-${d}`;
+        }
+        if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+          return clean;
+        }
+        const d = new Date(clean);
+        return isNaN(d.getTime()) ? null : d.toISOString().split('T')[0];
+      }
+      return null;
+    };
+
+    const sanitizeShiftDateVal = (val) => {
+      if (!val || val === '' || val === 'Invalid date' || val === 'null' || val === 'undefined') return null;
+      if (typeof val === 'string') {
+        if (val.includes('→') || val.includes('->') || val.includes(',') || val.includes('>')) {
+          const parts = val.split(/→|->|,|>/).map(s => sanitizeDateVal(s.trim())).filter(Boolean);
+          return parts.length > 0 ? parts.join(' → ') : null;
+        }
+        return sanitizeDateVal(val);
+      }
+      return sanitizeDateVal(val);
+    };
+
+    if (req.body.shiftDate !== undefined) {
+      req.body.shiftDate = sanitizeShiftDateVal(req.body.shiftDate);
+    }
+
+    // Sanitize all date fields in req.body
+    ['bookingDate', 'passportExpiry', 'visaExpiry'].forEach(field => {
+      if (req.body[field] !== undefined) {
+        req.body[field] = sanitizeDateVal(req.body[field]);
+      }
+    });
+
+    ['checkInDate', 'checkOutDate'].forEach(field => {
+      if (req.body[field] !== undefined) {
+        const sanitized = sanitizeDateVal(req.body[field]);
+        if (sanitized) {
+          req.body[field] = sanitized;
+        } else {
+          delete req.body[field];
+        }
+      }
+    });
+
     const sharedFields = [
       'guestName', 'fatherName', 'phone', 'email', 'nationality', 'gender', 'age', 'address',
       'idType', 'idProof', 'aadhaarFront', 'aadhaarBack', 'signature',
@@ -789,28 +980,43 @@ exports.updateBooking = async (req, res, next) => {
     // Dedicated handler for per-room date and time updates (from inline editor)
     if (req.body.isSingleRoomDateUpdate) {
       const singleUpdates = {
-        checkInDate: req.body.checkInDate,
-        checkInTime: req.body.checkInTime,
-        checkOutDate: req.body.checkOutDate,
-        checkOutTime: req.body.checkOutTime
+        checkInDate: sanitizeDateVal(req.body.checkInDate) || booking.checkInDate,
+        checkInTime: req.body.checkInTime || booking.checkInTime,
+        checkOutDate: sanitizeDateVal(req.body.checkOutDate) || booking.checkOutDate,
+        checkOutTime: req.body.checkOutTime || booking.checkOutTime
       };
-      const inDateVal = singleUpdates.checkInDate || booking.checkInDate || '';
-      const inTimeVal = singleUpdates.checkInTime || booking.checkInTime || '12:00';
-      const outDateVal = singleUpdates.checkOutDate || booking.checkOutDate || '';
-      const outTimeVal = singleUpdates.checkOutTime || booking.checkOutTime || '11:00';
-
-      const fullInIso = inDateVal.includes('T') ? inDateVal : `${inDateVal}T${inTimeVal}`;
-      const fullOutIso = outDateVal.includes('T') ? outDateVal : `${outDateVal}T${outTimeVal}`;
-
-      const dIn = new Date(fullInIso);
-      const dOut = new Date(fullOutIso);
-
-      if (!isNaN(dIn.getTime()) && !isNaN(dOut.getTime())) {
-        const diffHours = (dOut - dIn) / (1000 * 60 * 60);
-        const nNights = Math.max(1, Math.ceil(diffHours / 24));
-        if (req.body.totalAmount !== undefined) {
-          singleUpdates.totalAmount = Number(req.body.totalAmount);
-        }
+      if (req.body.shiftDate !== undefined) singleUpdates.shiftDate = sanitizeShiftDateVal(req.body.shiftDate);
+      if (req.body.shiftTime !== undefined) singleUpdates.shiftTime = req.body.shiftTime;
+      if (req.body.previousRoomNumber !== undefined) singleUpdates.previousRoomNumber = req.body.previousRoomNumber;
+      if (req.body.previousRoomType !== undefined) singleUpdates.previousRoomType = req.body.previousRoomType;
+      if (req.body.previousRoomRate !== undefined) singleUpdates.previousRoomRate = req.body.previousRoomRate;
+      if (req.body.sameDayChargeOption !== undefined) singleUpdates.sameDayChargeOption = req.body.sameDayChargeOption;
+      if (req.body.pricePerNight !== undefined) {
+        singleUpdates.pricePerNight = (req.body.pricePerNight !== null && req.body.pricePerNight !== '') ? Number(req.body.pricePerNight) : null;
+      }
+      if (req.body.totalAmount !== undefined) {
+        singleUpdates.totalAmount = Number(req.body.totalAmount);
+      }
+      if (req.body.amountPaid !== undefined) {
+        singleUpdates.amountPaid = Number(req.body.amountPaid);
+      }
+      if (req.body.discount !== undefined) {
+        singleUpdates.discount = Number(req.body.discount);
+      }
+      if (req.body.discountReason !== undefined) {
+        singleUpdates.discountReason = req.body.discountReason;
+      }
+      if (req.body.paymentStatus !== undefined) {
+        singleUpdates.paymentStatus = req.body.paymentStatus;
+      }
+      if (req.body.gstOption !== undefined) {
+        singleUpdates.gstOption = req.body.gstOption;
+      }
+      if (req.body.gstRate !== undefined) {
+        singleUpdates.gstRate = Number(req.body.gstRate);
+      }
+      if (req.body.registrationNumber !== undefined) {
+        singleUpdates.registrationNumber = req.body.registrationNumber;
       }
 
       if (req.body.roomId !== undefined && req.body.roomId !== booking.roomId) {
@@ -855,8 +1061,7 @@ exports.updateBooking = async (req, res, next) => {
       if (sharedUpdates.invoiceNumber === "") {
         sharedUpdates.invoiceNumber = null;
       }
-
-      if (Object.keys(sharedUpdates).length > 0) {
+          if (Object.keys(sharedUpdates).length > 0) {
         await Booking.update(sharedUpdates, {
           where: { groupBookingId: booking.groupBookingId }
         });
@@ -866,7 +1071,9 @@ exports.updateBooking = async (req, res, next) => {
       const individualUpdates = {};
       const individualFields = [
         'roomId', 'previousRoomId', 'previousRoomNumber', 'previousRoomRate',
-        'totalAmount', 'amountPaid', 'discount'
+        'previousRoomType', 'shiftDate', 'shiftTime', 'roomShiftTimes', 'sameDayChargeOption',
+        'totalAmount', 'amountPaid', 'discount', 'pricePerNight',
+        'checkInDate', 'checkInTime', 'checkOutDate', 'checkOutTime'
       ];
       individualFields.forEach(field => {
         if (updateData[field] !== undefined) {
@@ -874,8 +1081,9 @@ exports.updateBooking = async (req, res, next) => {
         }
       });
 
-      // Distribute totalAmount, amountPaid, discount across the group (skip if performing a room shift or skipGroupDistribution is passed)
-      if (!req.body.skipGroupDistribution && (updateData.totalAmount !== undefined || updateData.amountPaid !== undefined || updateData.discount !== undefined || req.body.customRates) && !req.body.previousRoomId) {
+      // Distribute totalAmount, amountPaid, discount, and stay dates/times across the group
+      const isShiftWithoutGroupData = (individualUpdates.roomId !== undefined && Number(individualUpdates.roomId) !== Number(booking.roomId)) && !req.body.groupRoomShifts;
+      if (!req.body.skipGroupDistribution && !isShiftWithoutGroupData && (updateData.totalAmount !== undefined || updateData.amountPaid !== undefined || updateData.discount !== undefined || req.body.customRates || req.body.groupRoomShifts || req.body.checkOutDate || req.body.checkInDate)) {
         const groupBookings = await Booking.findAll({
           where: { groupBookingId: booking.groupBookingId, hotelId: req.user.hotelId },
           include: [{ model: Room }]
@@ -937,6 +1145,50 @@ exports.updateBooking = async (req, res, next) => {
           const proportion = calculatedGbTotal / sumOfAllRoomTotals;
           let gbUpdates = {};
 
+          // Update room-specific stay dates, times, and shifts from groupRoomShifts
+          const shiftItem = Array.isArray(req.body.groupRoomShifts)
+            ? req.body.groupRoomShifts.find(s =>
+                (s.bookingId && Number(s.bookingId) === Number(gb.id)) ||
+                (s.roomId && Number(s.roomId) === Number(gb.roomId))
+              )
+            : null;
+
+          if (shiftItem) {
+            const resolvedCheckIn = shiftItem.checkInDate || req.body.checkInDate;
+            const resolvedCheckOut = shiftItem.checkOutDate || req.body.checkOutDate;
+            const resolvedCheckInTime = shiftItem.checkInTime || req.body.checkInTime;
+            const resolvedCheckOutTime = shiftItem.checkOutTime || req.body.checkOutTime;
+
+            if (resolvedCheckIn) gbUpdates.checkInDate = sanitizeDateVal(resolvedCheckIn);
+            if (resolvedCheckInTime) gbUpdates.checkInTime = resolvedCheckInTime;
+            if (resolvedCheckOut) gbUpdates.checkOutDate = sanitizeDateVal(resolvedCheckOut);
+            if (resolvedCheckOutTime) gbUpdates.checkOutTime = resolvedCheckOutTime;
+            if (shiftItem.shiftDate !== undefined) gbUpdates.shiftDate = sanitizeShiftDateVal(shiftItem.shiftDate);
+            if (shiftItem.shiftTime !== undefined) gbUpdates.shiftTime = shiftItem.shiftTime;
+            if (shiftItem.previousRoomNumber !== undefined) gbUpdates.previousRoomNumber = shiftItem.previousRoomNumber;
+            if (shiftItem.previousRoomRate !== undefined) gbUpdates.previousRoomRate = shiftItem.previousRoomRate;
+            if (shiftItem.previousRoomType !== undefined) gbUpdates.previousRoomType = shiftItem.previousRoomType;
+            if (shiftItem.sameDayChargeOption !== undefined) gbUpdates.sameDayChargeOption = shiftItem.sameDayChargeOption;
+            if (shiftItem.pricePerNight !== undefined && shiftItem.pricePerNight !== null && shiftItem.pricePerNight !== '') {
+              gbUpdates.pricePerNight = Number(shiftItem.pricePerNight);
+            }
+          } else {
+            if (req.body.checkInDate) gbUpdates.checkInDate = sanitizeDateVal(req.body.checkInDate);
+            if (req.body.checkInTime) gbUpdates.checkInTime = req.body.checkInTime;
+            if (req.body.checkOutDate) gbUpdates.checkOutDate = sanitizeDateVal(req.body.checkOutDate);
+            if (req.body.checkOutTime) gbUpdates.checkOutTime = req.body.checkOutTime;
+          }
+
+          if (!gbUpdates.pricePerNight) {
+            let customRate = undefined;
+            if (customRates[gb.roomId] !== undefined && customRates[gb.roomId] !== '') customRate = parseFloat(customRates[gb.roomId]);
+            else if (customRates[gb.id] !== undefined && customRates[gb.id] !== '') customRate = parseFloat(customRates[gb.id]);
+            else if (gb.Room?.roomNumber && customRates[gb.Room.roomNumber] !== undefined && customRates[gb.Room.roomNumber] !== '') customRate = parseFloat(customRates[gb.Room.roomNumber]);
+            if (customRate !== undefined && !isNaN(customRate) && customRate > 0) {
+              gbUpdates.pricePerNight = customRate;
+            }
+          }
+
           if (updateData.totalAmount !== undefined) {
             if (i === groupBookings.length - 1) {
               gbUpdates.totalAmount = parseFloat((parseFloat(updateData.totalAmount) - accumulatedTotalAmount).toFixed(2));
@@ -985,8 +1237,102 @@ exports.updateBooking = async (req, res, next) => {
           const newRoom = await Room.findOne({ where: { id: newRoomId, hotelId: req.user.hotelId } });
 
           if (newRoom) {
+            const oldNumStr = oldRoom ? oldRoom.roomNumber : null;
+            let combinedPrevNum = booking.previousRoomNumber || req.body.previousRoomNumber;
+            if (combinedPrevNum && oldNumStr) {
+              const parts = String(combinedPrevNum).split(/→|->|,|>/).map(p => p.trim()).filter(Boolean);
+              if (parts[parts.length - 1] !== String(oldNumStr)) {
+                combinedPrevNum = `${combinedPrevNum} → ${oldNumStr}`;
+              }
+            } else if (oldNumStr) {
+              combinedPrevNum = oldNumStr;
+            }
+
+            const shiftYMD = sanitizeDateVal(req.body.shiftDate) || new Date().toISOString().split('T')[0];
+            const checkInYMD = booking.checkInDate ? booking.checkInDate.split('T')[0] : '';
+            const checkOutYMD = booking.checkOutDate ? booking.checkOutDate.split('T')[0] : '';
+
+            let totalStayDays = 1;
+            if (checkInYMD && checkOutYMD) {
+              totalStayDays = Math.max(1, Math.ceil(Math.abs(new Date(checkOutYMD) - new Date(checkInYMD)) / (1000 * 60 * 60 * 24)));
+            }
+
+            let prevDays = 0;
+            if (shiftYMD > checkInYMD) {
+              prevDays = Math.min(totalStayDays - 1, Math.ceil(Math.abs(new Date(shiftYMD) - new Date(checkInYMD)) / (1000 * 60 * 60 * 24)));
+            }
+            const curDays = Math.max(1, totalStayDays - prevDays);
+
+            const existingPrevRateList = String(booking.previousRoomRate || '').split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
+            const lastSavedPrevRate = existingPrevRateList.length > 0 ? existingPrevRateList[existingPrevRateList.length - 1] : null;
+
+            let actualOldRate = (req.body.previousRoomRate !== undefined && req.body.previousRoomRate !== null && !isNaN(Number(req.body.previousRoomRate)) && Number(req.body.previousRoomRate) >= 0)
+              ? Number(req.body.previousRoomRate)
+              : (lastSavedPrevRate !== null ? lastSavedPrevRate : Number(oldRoom ? oldRoom.pricePerNight : 0));
+
+
+            const currentPrevRateStr = booking.previousRoomRate;
+            let combinedPrevRate = String(actualOldRate);
+            if (currentPrevRateStr) {
+              const rateParts = String(currentPrevRateStr).split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
+              const reqParts = String(req.body.previousRoomRate || '').split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
+              if (reqParts.length > rateParts.length) {
+                combinedPrevRate = String(req.body.previousRoomRate);
+              } else if (rateParts.length > 0) {
+                combinedPrevRate = `${currentPrevRateStr} → ${actualOldRate}`;
+              }
+            }
+
+            const prevRateVal = combinedPrevRate;
+            const curRate = req.body.newRoomPrice !== undefined ? Number(req.body.newRoomPrice) : Number(newRoom ? newRoom.pricePerNight : 0);
+
+            const pRatesList = String(prevRateVal).split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
+            let prevTotalSum = 0;
+            if (pRatesList.length > 0) {
+              pRatesList.forEach((rVal, rIdx) => {
+                const dForRm = rIdx === 0 ? prevDays : 0;
+                prevTotalSum += rVal * dForRm;
+              });
+            } else {
+              prevTotalSum = Number(prevRateVal || 0) * prevDays;
+            }
+
+            if (req.body.sameDayChargeOption === 'charge_previous') {
+              prevTotalSum += actualOldRate;
+            }
+
+            const nowShiftTime = req.body.shiftTime || new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+            const currentShiftTimeStr = booking.shiftTime;
+            let combinedShiftTime = nowShiftTime;
+            if (currentShiftTimeStr) {
+              const timeParts = String(currentShiftTimeStr).split(/→|->|,|>/).map(s => s.trim()).filter(Boolean);
+              const reqTimeParts = String(req.body.shiftTime || '').split(/→|->|,|>/).map(s => s.trim()).filter(Boolean);
+              if (reqTimeParts.length > timeParts.length) {
+                combinedShiftTime = String(req.body.shiftTime);
+              } else {
+                combinedShiftTime = `${currentShiftTimeStr} → ${nowShiftTime}`;
+              }
+            }
+
+            let combinedShiftDate = shiftYMD;
+            if (booking.shiftDate) {
+              const dateParts = String(booking.shiftDate).split(/→|->|,|>/).map(s => s.trim()).filter(Boolean);
+              const reqDateParts = String(req.body.shiftDate || '').split(/→|->|,|>/).map(s => s.trim()).filter(Boolean);
+              if (reqDateParts.length > dateParts.length) {
+                combinedShiftDate = String(req.body.shiftDate);
+              } else if (dateParts.length > 0) {
+                combinedShiftDate = `${booking.shiftDate} → ${shiftYMD}`;
+              }
+            }
+
             individualUpdates.previousRoomId = oldRoomId;
-            individualUpdates.previousRoomNumber = oldRoom ? oldRoom.roomNumber : null;
+            individualUpdates.previousRoomNumber = combinedPrevNum;
+            individualUpdates.previousRoomRate = String(prevRateVal);
+            individualUpdates.previousRoomType = req.body.previousRoomType || (oldRoom ? (oldRoom.type || oldRoom.roomType) : null);
+            individualUpdates.shiftDate = combinedShiftDate;
+            individualUpdates.shiftTime = combinedShiftTime;
+            individualUpdates.totalAmount = prevTotalSum + (curDays * curRate);
+            individualUpdates.pricePerNight = curRate;
 
             if (booking.status === 'Active') {
               if (oldRoom) {
@@ -999,6 +1345,31 @@ exports.updateBooking = async (req, res, next) => {
 
         if (individualUpdates.invoiceNumber === "") {
           individualUpdates.invoiceNumber = null;
+        }
+        if (individualUpdates.shiftDate !== undefined) {
+          individualUpdates.shiftDate = sanitizeShiftDateVal(individualUpdates.shiftDate);
+        }
+
+        const mainShiftItem = Array.isArray(req.body.groupRoomShifts)
+          ? req.body.groupRoomShifts.find(s =>
+              (s.bookingId && Number(s.bookingId) === Number(booking.id)) ||
+              (s.roomId && Number(s.roomId) === Number(booking.roomId))
+            )
+          : null;
+        if (mainShiftItem) {
+          const resIn = mainShiftItem.checkInDate || req.body.checkInDate;
+          const resOut = mainShiftItem.checkOutDate || req.body.checkOutDate;
+          const resInTime = mainShiftItem.checkInTime || req.body.checkInTime;
+          const resOutTime = mainShiftItem.checkOutTime || req.body.checkOutTime;
+          if (resIn) individualUpdates.checkInDate = sanitizeDateVal(resIn);
+          if (resInTime) individualUpdates.checkInTime = resInTime;
+          if (resOut) individualUpdates.checkOutDate = sanitizeDateVal(resOut);
+          if (resOutTime) individualUpdates.checkOutTime = resOutTime;
+        } else {
+          if (req.body.checkInDate) individualUpdates.checkInDate = sanitizeDateVal(req.body.checkInDate);
+          if (req.body.checkInTime) individualUpdates.checkInTime = req.body.checkInTime;
+          if (req.body.checkOutDate) individualUpdates.checkOutDate = sanitizeDateVal(req.body.checkOutDate);
+          if (req.body.checkOutTime) individualUpdates.checkOutTime = req.body.checkOutTime;
         }
 
         await booking.update(individualUpdates);
@@ -1024,7 +1395,7 @@ exports.updateBooking = async (req, res, next) => {
             combinedPrevNum = oldNumStr;
           }
 
-          const shiftYMD = req.body.shiftDate || new Date().toISOString().split('T')[0];
+          const shiftYMD = sanitizeDateVal(req.body.shiftDate) || new Date().toISOString().split('T')[0];
           const checkInYMD = booking.checkInDate ? booking.checkInDate.split('T')[0] : '';
           const checkOutYMD = booking.checkOutDate ? booking.checkOutDate.split('T')[0] : '';
 
@@ -1046,9 +1417,6 @@ exports.updateBooking = async (req, res, next) => {
             ? Number(req.body.previousRoomRate)
             : (lastSavedPrevRate !== null ? lastSavedPrevRate : Number(oldRoom ? oldRoom.pricePerNight : 0));
 
-          if (req.body.sameDayChargeOption === 'no_charge') {
-            actualOldRate = 0;
-          }
 
           const currentPrevRateStr = booking.previousRoomRate;
           let combinedPrevRate = String(actualOldRate);
@@ -1084,16 +1452,34 @@ exports.updateBooking = async (req, res, next) => {
           const currentShiftTimeStr = booking.shiftTime;
           let combinedShiftTime = nowShiftTime;
           if (currentShiftTimeStr) {
-            combinedShiftTime = `${currentShiftTimeStr} → ${nowShiftTime}`;
+            const timeParts = String(currentShiftTimeStr).split(/→|->|,|>/).map(s => s.trim()).filter(Boolean);
+            const reqTimeParts = String(req.body.shiftTime || '').split(/→|->|,|>/).map(s => s.trim()).filter(Boolean);
+            if (reqTimeParts.length > timeParts.length) {
+              combinedShiftTime = String(req.body.shiftTime);
+            } else {
+              combinedShiftTime = `${currentShiftTimeStr} → ${nowShiftTime}`;
+            }
+          }
+
+          let combinedShiftDate = shiftYMD;
+          if (booking.shiftDate) {
+            const dateParts = String(booking.shiftDate).split(/→|->|,|>/).map(s => s.trim()).filter(Boolean);
+            const reqDateParts = String(req.body.shiftDate || '').split(/→|->|,|>/).map(s => s.trim()).filter(Boolean);
+            if (reqDateParts.length > dateParts.length) {
+              combinedShiftDate = String(req.body.shiftDate);
+            } else if (dateParts.length > 0) {
+              combinedShiftDate = `${booking.shiftDate} → ${shiftYMD}`;
+            }
           }
 
           req.body.previousRoomId = oldRoomId;
           req.body.previousRoomNumber = combinedPrevNum;
           req.body.previousRoomRate = String(prevRateVal);
           req.body.previousRoomType = req.body.previousRoomType || (oldRoom ? (oldRoom.type || oldRoom.roomType) : null);
-          req.body.shiftDate = shiftYMD;
+          req.body.shiftDate = combinedShiftDate;
           req.body.shiftTime = combinedShiftTime;
           req.body.totalAmount = prevTotalSum + (curDays * curRate);
+          req.body.pricePerNight = curRate;
 
           if (booking.status === 'Active') {
             if (oldRoom) {
@@ -1113,6 +1499,12 @@ exports.updateBooking = async (req, res, next) => {
       });
       if (safeUpdateData.invoiceNumber === "") {
         safeUpdateData.invoiceNumber = null;
+      }
+      if (safeUpdateData.shiftDate !== undefined) {
+        safeUpdateData.shiftDate = sanitizeShiftDateVal(safeUpdateData.shiftDate);
+      }
+      if (safeUpdateData.bookingDate !== undefined) {
+        safeUpdateData.bookingDate = sanitizeDateVal(safeUpdateData.bookingDate);
       }
       await booking.update(safeUpdateData);
     }
@@ -1345,9 +1737,11 @@ exports.deleteBooking = async (req, res, next) => {
 
       const oldBookingData = b.toJSON();
 
-      // 3. Mark status as Cancelled (do NOT hard delete!)
+      // 3. Mark status as Cancelled (do NOT hard delete!) and release invoice & registration numbers
       await b.update({
         status: 'Cancelled',
+        invoiceNumber: null,
+        registrationNumber: null,
         paymentHistory: JSON.stringify(history)
       });
 
@@ -1429,6 +1823,42 @@ exports.getBookingById = async (req, res, next) => {
     res.status(200).json({ success: true, data: plainBooking });
   } catch (error) {
     console.error('Error in getBookingById:', error);
+    next(error);
+  }
+};
+
+// @desc    Get next available registration number for hotel
+// @route   GET /api/bookings/next-reg-no
+// @access  Private
+exports.getNextRegistrationNumber = async (req, res, next) => {
+  try {
+    const allBookingsWithReg = await Booking.findAll({
+      where: {
+        hotelId: req.user.hotelId,
+        registrationNumber: { [Op.ne]: null },
+        status: { [Op.ne]: 'Cancelled' }
+      },
+      attributes: ['id', 'registrationNumber']
+    });
+
+    let maxSeq = 0;
+    allBookingsWithReg.forEach(b => {
+      const reg = b.registrationNumber || '';
+      const match = String(reg).match(/(\d+)$/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxSeq) maxSeq = num;
+      }
+    });
+
+    if (maxSeq === 0) {
+      const totalCount = await Booking.count({ where: { hotelId: req.user.hotelId, status: { [Op.ne]: 'Cancelled' } } });
+      maxSeq = totalCount;
+    }
+
+    const nextRegNo = `REG-${String(maxSeq + 1).padStart(3, '0')}`;
+    res.status(200).json({ success: true, nextRegNo });
+  } catch (error) {
     next(error);
   }
 };

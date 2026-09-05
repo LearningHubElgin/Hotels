@@ -1,3 +1,5 @@
+const { Op } = require('sequelize');
+
 const executeAlterQuery = async (sequelize, query, description) => {
   try {
     await sequelize.query(query);
@@ -86,15 +88,19 @@ const runMigrations = async (sequelize) => {
   await executeAlterQuery(sequelize, "ALTER TABLE Bookings ADD COLUMN previousRoomRate VARCHAR(255) NULL;", "Migration: Added previousRoomRate column to Bookings table");
   await executeAlterQuery(sequelize, "ALTER TABLE Bookings MODIFY COLUMN previousRoomRate VARCHAR(255) NULL;", "Migration: Modified previousRoomRate column to VARCHAR(255) in Bookings table.");
   await executeAlterQuery(sequelize, "ALTER TABLE Bookings ADD COLUMN previousRoomType VARCHAR(100) NULL;", "Migration: Added previousRoomType column to Bookings table");
-  await executeAlterQuery(sequelize, "ALTER TABLE Bookings ADD COLUMN shiftDate DATE NULL;", "Migration: Added shiftDate column to Bookings table");
+  await executeAlterQuery(sequelize, "ALTER TABLE Bookings ADD COLUMN shiftDate VARCHAR(255) NULL;", "Migration: Added shiftDate column to Bookings table");
+  await executeAlterQuery(sequelize, "ALTER TABLE Bookings MODIFY COLUMN shiftDate VARCHAR(255) NULL;", "Migration: Modified shiftDate column to VARCHAR(255) in Bookings table.");
   await executeAlterQuery(sequelize, "ALTER TABLE Bookings ADD COLUMN shiftTime VARCHAR(255) NULL;", "Migration: Added shiftTime column to Bookings table");
+  await executeAlterQuery(sequelize, "ALTER TABLE Bookings ADD COLUMN sameDayChargeOption VARCHAR(50) DEFAULT 'charge_previous';", "Migration: Added sameDayChargeOption column to Bookings table");
   await executeAlterQuery(sequelize, "ALTER TABLE Bookings ADD COLUMN registrationNumber VARCHAR(255) NULL;", "Migration: Added registrationNumber column to Bookings table");
+  await executeAlterQuery(sequelize, "ALTER TABLE Bookings ADD COLUMN pricePerNight DECIMAL(10,2) NULL;", "Migration: Added pricePerNight column to Bookings table");
 
   // 4. Hotels Column Migrations
   await executeAlterQuery(sequelize, "ALTER TABLE Hotels ADD COLUMN hasActivityLogs TINYINT(1) DEFAULT 1;", "Migration: added hasActivityLogs to Hotels table.");
   await executeAlterQuery(sequelize, "ALTER TABLE Hotels ADD COLUMN hasOpeningBalance TINYINT(1) DEFAULT 1;", "Migration: added hasOpeningBalance to Hotels table.");
   await executeAlterQuery(sequelize, "ALTER TABLE Hotels ADD COLUMN openingCashBalance DECIMAL(10,2) DEFAULT 0.00;", "Migration: added openingCashBalance to Hotels table.");
   await executeAlterQuery(sequelize, "ALTER TABLE Hotels ADD COLUMN openingBankBalance DECIMAL(10,2) DEFAULT 0.00;", "Migration: added openingBankBalance to Hotels table.");
+  await executeAlterQuery(sequelize, "ALTER TABLE Hotels ADD COLUMN bankOpeningBalances TEXT NULL;", "Migration: added bankOpeningBalances to Hotels table.");
   await executeAlterQuery(sequelize, "ALTER TABLE Hotels ADD COLUMN lockOpeningBalance TINYINT(1) DEFAULT 0;", "Migration: added lockOpeningBalance to Hotels table.");
   await executeAlterQuery(sequelize, "ALTER TABLE Hotels ADD COLUMN defaultGstOption VARCHAR(50) DEFAULT 'none';", "Migration: Added defaultGstOption column to Hotels table");
   await executeAlterQuery(sequelize, "ALTER TABLE Hotels ADD COLUMN hasRoomType BOOLEAN DEFAULT true;", "Migration: Added hasRoomType column to Hotels table");
@@ -170,6 +176,64 @@ const runMigrations = async (sequelize) => {
     `ALTER TABLE Hotels ADD COLUMN enableRegistrationNumber TINYINT(1) DEFAULT 0;`,
     `Migration: Added enableRegistrationNumber column to Hotels table.`
   );
+
+  // 10. Migration for enablePaymentSerialNumber
+  await executeAlterQuery(
+    sequelize,
+    `ALTER TABLE Hotels ADD COLUMN enablePaymentSerialNumber TINYINT(1) DEFAULT 0;`,
+    `Migration: Added enablePaymentSerialNumber column to Hotels table.`
+  );
+
+  // 11. Migration for Expenses serialNumber
+  await executeAlterQuery(
+    sequelize,
+    `ALTER TABLE Expenses ADD COLUMN serialNumber VARCHAR(255) NULL;`,
+    `Migration: Added serialNumber column to Expenses table.`
+  );
+
+  // Backfill serialNumber for any existing expenses in database
+  try {
+    const Expense = require('../models/Expense');
+    const expensesWithoutSerial = await Expense.findAll({
+      where: {
+        [Op.or]: [
+          { serialNumber: null },
+          { serialNumber: '' }
+        ]
+      },
+      order: [['hotelId', 'ASC'], ['date', 'ASC'], ['createdAt', 'ASC'], ['id', 'ASC']]
+    });
+
+    if (expensesWithoutSerial.length > 0) {
+      const hotelSerialMap = new Map();
+      for (const exp of expensesWithoutSerial) {
+        const hId = exp.hotelId || 0;
+        if (!hotelSerialMap.has(hId)) {
+          const hotelExps = await Expense.findAll({
+            where: { hotelId: exp.hotelId },
+            attributes: ['id', 'serialNumber']
+          });
+          let maxSeq = 0;
+          hotelExps.forEach(e => {
+            if (e.serialNumber) {
+              const match = String(e.serialNumber).match(/(\d+)$/);
+              if (match) {
+                const num = parseInt(match[1], 10);
+                if (num > maxSeq) maxSeq = num;
+              }
+            }
+          });
+          hotelSerialMap.set(hId, maxSeq);
+        }
+        const nextNum = hotelSerialMap.get(hId) + 1;
+        hotelSerialMap.set(hId, nextNum);
+        await exp.update({ serialNumber: String(nextNum) });
+      }
+      console.log(`[Migration] Backfilled serialNumber for ${expensesWithoutSerial.length} existing expenses.`.green);
+    }
+  } catch (err) {
+    console.error('[Migration] Error backfilling expenses serialNumber:', err.message);
+  }
 };
 
 module.exports = runMigrations;

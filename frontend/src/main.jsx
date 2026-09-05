@@ -37,6 +37,14 @@ Date.prototype.toISOString = function () {
   
   return `${localTime.getUTCFullYear()}-${pad(localTime.getUTCMonth() + 1)}-${pad(localTime.getUTCDate())}T${pad(localTime.getUTCHours())}:${pad(localTime.getUTCMinutes())}:${pad(localTime.getUTCSeconds())}.${padMs(localTime.getUTCMilliseconds())}Z`;
 };
+// Disable mouse scroll wheel altering number inputs globally
+if (typeof window !== 'undefined') {
+  window.addEventListener('wheel', () => {
+    if (document.activeElement && document.activeElement.type === 'number') {
+      document.activeElement.blur();
+    }
+  }, { passive: true });
+}
 // ----------------------------------------------------
 
 createRoot(document.getElementById('root')).render(

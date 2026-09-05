@@ -9,7 +9,8 @@ const {
   getGuestHistory,
   getGuestByPhone,
   getBookingById,
-  deleteBooking
+  deleteBooking,
+  getNextRegistrationNumber
 } = require('../controllers/booking.controller');
 const { protect } = require('../middleware/auth');
 
@@ -18,6 +19,7 @@ const router = express.Router();
 router.use(protect);
 
 router.post('/', createBooking);
+router.get('/next-reg-no', getNextRegistrationNumber);
 router.get('/active', getActiveBookings);
 router.get('/history', getGuestHistory);
 router.get('/guest/:phone', getGuestByPhone);

@@ -34,10 +34,30 @@ const CancelBookingModal = ({ isOpen, onClose, booking, room, onConfirm }) => {
 
   useEffect(() => {
     if (booking) {
-      let paid = parseFloat(booking.amountPaid) || 0;
-      if (booking.groupBookings && booking.groupBookings.length > 1) {
-        paid = booking.groupBookings.reduce((sum, b) => sum + (parseFloat(b.amountPaid) || 0), 0);
+      const isGroup = booking.groupBookings && booking.groupBookings.length > 1;
+      let paidFromHistory = null;
+      try {
+        let logs = [];
+        if (isGroup) {
+          const bWithH = booking.groupBookings.find(b => b.paymentHistory);
+          if (bWithH) logs = typeof bWithH.paymentHistory === 'string' ? JSON.parse(bWithH.paymentHistory) : bWithH.paymentHistory;
+        }
+        if ((!logs || logs.length === 0) && booking.paymentHistory) {
+          logs = typeof booking.paymentHistory === 'string' ? JSON.parse(booking.paymentHistory) : booking.paymentHistory;
+        }
+        if (Array.isArray(logs) && logs.length > 0) {
+          paidFromHistory = logs.reduce((sum, l) => sum + Number(l.amount || 0), 0);
+        }
+      } catch (e) {
+        paidFromHistory = null;
       }
+
+      let paid = paidFromHistory !== null
+        ? paidFromHistory
+        : (isGroup
+            ? booking.groupBookings.reduce((sum, b) => sum + (parseFloat(b.amountPaid) || 0), 0)
+            : (parseFloat(booking.amountPaid) || 0));
+
       setRefundAmount(paid > 0 ? String(paid) : '0');
       setRefundMode('Cash');
       setRefundBank('');
@@ -50,9 +70,30 @@ const CancelBookingModal = ({ isOpen, onClose, booking, room, onConfirm }) => {
   if (!isOpen || !booking) return null;
 
   const isGroup = booking.groupBookings && booking.groupBookings.length > 1;
-  const paidAmount = isGroup
-    ? booking.groupBookings.reduce((sum, b) => sum + (parseFloat(b.amountPaid) || 0), 0)
-    : (parseFloat(booking.amountPaid) || 0);
+
+  let paidFromHistory = null;
+  try {
+    let logs = [];
+    if (isGroup) {
+      const bWithH = booking.groupBookings.find(b => b.paymentHistory);
+      if (bWithH) logs = typeof bWithH.paymentHistory === 'string' ? JSON.parse(bWithH.paymentHistory) : bWithH.paymentHistory;
+    }
+    if ((!logs || logs.length === 0) && booking.paymentHistory) {
+      logs = typeof booking.paymentHistory === 'string' ? JSON.parse(booking.paymentHistory) : booking.paymentHistory;
+    }
+    if (Array.isArray(logs) && logs.length > 0) {
+      paidFromHistory = logs.reduce((sum, l) => sum + Number(l.amount || 0), 0);
+    }
+  } catch (e) {
+    paidFromHistory = null;
+  }
+
+  const paidAmount = paidFromHistory !== null
+    ? paidFromHistory
+    : (isGroup
+        ? booking.groupBookings.reduce((sum, b) => sum + (parseFloat(b.amountPaid) || 0), 0)
+        : (parseFloat(booking.amountPaid) || 0));
+
   const roomNo = isGroup
     ? booking.groupBookings.map(b => b.Room?.roomNumber || b.previousRoomNumber).filter(Boolean).join(', ')
     : (room?.roomNumber || booking.Room?.roomNumber || booking.previousRoomNumber || 'N/A');
@@ -60,10 +101,18 @@ const CancelBookingModal = ({ isOpen, onClose, booking, room, onConfirm }) => {
   const baseRate = isGroup
     ? booking.groupBookings.reduce((sum, b) => sum + (parseFloat(b.totalAmount) || 0), 0)
     : (parseFloat(booking.totalAmount || 0));
+  const discount = isGroup
+    ? booking.groupBookings.reduce((sum, b) => sum + (parseFloat(b.discount) || 0), 0)
+    : (parseFloat(booking.discount || 0));
+  const netBase = Math.max(0, baseRate - discount);
+
   const gstOption = booking.gstOption || 'none';
   const gstRate = Number(booking.gstRate !== undefined && booking.gstRate !== null ? booking.gstRate : 0);
-  const gstAmount = gstOption === 'none' ? 0 : baseRate * (gstRate / 100);
-  const grandTotal = Math.round(baseRate + gstAmount);
+  let gstAmount = 0;
+  if (gstOption === 'exclusive') {
+    gstAmount = netBase * (gstRate / 100);
+  }
+  const grandTotal = Math.round(netBase + gstAmount);
 
   const handleSubmit = async (e) => {
     e.preventDefault();

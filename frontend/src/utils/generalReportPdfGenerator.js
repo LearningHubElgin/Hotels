@@ -94,8 +94,8 @@ export const generateGeneralReportPdf = (data) => {
     doc.text("TRANSACTION DETAILS", margin, startY + 4);
 
     const headCols = isSingleDate
-      ? ["Billing No.", "Guest Name", "Company", "Room No.", "Rate/Night", "Days", "Charges", "Extra Service / Food", "CGST", "SGST", "Total GST", "Total Amount"]
-      : ["Date", "Billing No.", "Guest Name", "Company", "Room No.", "Rate/Night", "Days", "Charges", "Extra Service / Food", "CGST", "SGST", "Total GST", "Total Amount"];
+      ? ["Billing No.", "Guest Name", "Company", "Room No.", "Rate/Night", "Days", "Charges", "Discount", "Extra Service / Food", "CGST", "SGST", "Total GST", "Total Amount"]
+      : ["Date", "Billing No.", "Guest Name", "Company", "Room No.", "Rate/Night", "Days", "Charges", "Discount", "Extra Service / Food", "CGST", "SGST", "Total GST", "Total Amount"];
 
     const txBody = transactionsList.map(tx => {
       const row = [
@@ -106,6 +106,7 @@ export const generateGeneralReportPdf = (data) => {
         tx.catalogRate ? `Rs. ${tx.catalogRate}` : 'N/A',
         String(tx.stayDays || 1),
         formatCurrencyVal(tx.baseAmount),
+        formatCurrencyVal(tx.discount || 0),
         formatCurrencyVal(tx.extraService),
         formatCurrency3Val(tx.cgst),
         formatCurrency3Val(tx.sgst),
@@ -127,6 +128,7 @@ export const generateGeneralReportPdf = (data) => {
         "",
         "",
         formatCurrencyVal(tableTotals.baseAmount),
+        formatCurrencyVal(tableTotals.discount || 0),
         formatCurrencyVal(tableTotals.extraServices),
         formatCurrency3Val(tableTotals.cgst),
         formatCurrency3Val(tableTotals.sgst),
@@ -148,7 +150,8 @@ export const generateGeneralReportPdf = (data) => {
           8: { halign: 'right' },
           9: { halign: 'right' },
           10: { halign: 'right' },
-          11: { halign: 'right', fontStyle: 'bold' }
+          11: { halign: 'right' },
+          12: { halign: 'right', fontStyle: 'bold' }
         }
       : {
           5: { halign: 'right' },
@@ -158,7 +161,8 @@ export const generateGeneralReportPdf = (data) => {
           9: { halign: 'right' },
           10: { halign: 'right' },
           11: { halign: 'right' },
-          12: { halign: 'right', fontStyle: 'bold' }
+          12: { halign: 'right' },
+          13: { halign: 'right', fontStyle: 'bold' }
         };
 
     autoTable(doc, {

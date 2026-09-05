@@ -554,8 +554,11 @@ const GstReport = () => {
         const groupItems = filteredBookingsList.filter(h => h.groupBookingId === item.groupBookingId);
 
         const roomNumbers = groupItems
-          .map(h => h.previousRoomNumber || h.Room?.roomNumber)
-          .map(cleanRoomNumber)
+          .map(h => {
+            const prev = h.previousRoomNumber ? cleanRoomNumber(h.previousRoomNumber) : null;
+            const curr = cleanRoomNumber(h.Room?.roomNumber || h.roomNumber || h.roomId);
+            return prev && prev !== 'N/A' && prev !== curr ? `${prev} → ${curr}` : curr;
+          })
           .filter(Boolean);
         const roomTypes = groupItems
           .map(h => h.Room?.type)
@@ -574,10 +577,14 @@ const GstReport = () => {
         consolidatedBookingsList.push(groupItem);
       }
     } else {
+      const prev = item.previousRoomNumber ? cleanRoomNumber(item.previousRoomNumber) : null;
+      const curr = cleanRoomNumber(item.Room?.roomNumber || item.roomNumber || item.roomId);
+      const rStr = prev && prev !== 'N/A' && prev !== curr ? `${prev} → ${curr}` : (curr || 'N/A');
+
       consolidatedBookingsList.push({
         ...item,
         isGroup: false,
-        roomNumbers: [cleanRoomNumber(item.previousRoomNumber || item.Room?.roomNumber)].filter(Boolean),
+        roomNumbers: [rStr].filter(Boolean),
         roomTypes: [item.Room?.type].filter(Boolean),
         groupBookings: [item]
       });

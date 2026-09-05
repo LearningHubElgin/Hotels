@@ -271,6 +271,45 @@ const getBookingEffectiveTotalAmount = (b) => {
   return correctedTotal > 0 ? correctedTotal : (parseFloat(b.totalAmount) || 0);
 };
 
+const getBookingPeriodRatio = (b, reqStartDate, reqEndDate) => {
+  if (!reqStartDate || !reqEndDate) return 1;
+  const cInStr = b.checkInDate ? String(b.checkInDate).split('T')[0] : (b.createdAt ? String(b.createdAt).split('T')[0] : '');
+  const todayStr = new Date().toISOString().split('T')[0];
+  const cOutStr = b.checkOutDate ? String(b.checkOutDate).split('T')[0] : (todayStr > cInStr ? todayStr : cInStr);
+  if (!cInStr) return 1;
+
+  if (cInStr === cOutStr) {
+    return (cInStr >= reqStartDate && cInStr <= reqEndDate) ? 1 : 0;
+  }
+
+  let totalNights = 0;
+  let matchingNights = 0;
+
+  try {
+    const [y1, m1, d1] = cInStr.split('-').map(Number);
+    const [y2, m2, d2] = cOutStr.split('-').map(Number);
+    const cur = new Date(Date.UTC(y1, m1 - 1, d1));
+    const end = new Date(Date.UTC(y2, m2 - 1, d2));
+
+    while (cur < end) {
+      const y = cur.getUTCFullYear();
+      const m = String(cur.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(cur.getUTCDate()).padStart(2, '0');
+      const dStr = `${y}-${m}-${d}`;
+      totalNights++;
+      if (dStr >= reqStartDate && dStr <= reqEndDate) {
+        matchingNights++;
+      }
+      cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+  } catch (e) {
+    return 1;
+  }
+
+  if (totalNights <= 0) return 1;
+  return matchingNights / totalNights;
+};
+
 // @desc    Get billing and revenue summary
 // @route   GET /api/analytics/billing
 // @access  Private (Admin/Staff)
@@ -288,6 +327,8 @@ exports.getBillingSummary = async (req, res, next) => {
 
     let dateWhereClause = null;
     let extraDateWhere = null;
+    let activeStartDate = reqStartDate || null;
+    let activeEndDate = reqEndDate || null;
 
     if (reqStartDate && reqEndDate) {
       const moment = require('moment-timezone');
@@ -296,13 +337,21 @@ exports.getBillingSummary = async (req, res, next) => {
 
       dateWhereClause = {
         [Op.or]: [
-          { createdAt: { [Op.between]: [startDateTime, endDateTime] } },
-          { checkInDate: { [Op.between]: [reqStartDate, reqEndDate] } },
-          { bookingDate: { [Op.between]: [reqStartDate, reqEndDate] } },
           {
             [Op.and]: [
               { checkInDate: { [Op.lte]: reqEndDate } },
-              { checkOutDate: { [Op.gte]: reqStartDate } }
+              {
+                [Op.or]: [
+                  { checkOutDate: { [Op.gte]: reqStartDate } },
+                  { checkOutDate: null }
+                ]
+              }
+            ]
+          },
+          {
+            [Op.and]: [
+              { checkInDate: null },
+              { createdAt: { [Op.between]: [startDateTime, endDateTime] } }
             ]
           }
         ]
@@ -317,8 +366,30 @@ exports.getBillingSummary = async (req, res, next) => {
       const moment = require('moment-timezone');
       const endDateObj = moment.tz(`${yearVal}-${mStr}-${dStr} 23:59:59`, 'YYYY-MM-DD HH:mm:ss', 'Asia/Kolkata').toDate();
       const startDateObj = moment(endDateObj).subtract(1, 'year').add(1, 'second').toDate();
+      const sYMD = moment(startDateObj).format('YYYY-MM-DD');
+      const eYMD = moment(endDateObj).format('YYYY-MM-DD');
+      activeStartDate = sYMD;
+      activeEndDate = eYMD;
       dateWhereClause = {
-        createdAt: { [Op.between]: [startDateObj, endDateObj] }
+        [Op.or]: [
+          {
+            [Op.and]: [
+              { checkInDate: { [Op.lte]: eYMD } },
+              {
+                [Op.or]: [
+                  { checkOutDate: { [Op.gte]: sYMD } },
+                  { checkOutDate: null }
+                ]
+              }
+            ]
+          },
+          {
+            [Op.and]: [
+              { checkInDate: null },
+              { createdAt: { [Op.between]: [startDateObj, endDateObj] } }
+            ]
+          }
+        ]
       };
       extraDateWhere = {
         createdAt: { [Op.between]: [startDateObj, endDateObj] }
@@ -336,7 +407,8 @@ exports.getBillingSummary = async (req, res, next) => {
       attributes: [
         'id', 'hotelId', 'groupBookingId', 'status', 'createdAt', 'checkInDate',
         'checkOutDate', 'amountPaid', 'totalAmount', 'discount', 'gstOption',
-        'gstRate', 'bookingType', 'previousRoomNumber', 'registrationNumber', 'roomId'
+        'gstRate', 'bookingType', 'previousRoomNumber', 'registrationNumber', 'roomId',
+        'paymentHistory'
       ],
       order: [['createdAt', 'DESC']]
     });
@@ -414,17 +486,29 @@ exports.getBillingSummary = async (req, res, next) => {
       let totalAmount = getBookingEffectiveTotalAmount(b);
       let discount = parseFloat(b.discount) || 0;
 
+      let historyToUse = b.paymentHistory;
       if (b.groupBookingId) {
         const groupItems = allBookingsForStats.filter(gb => gb.groupBookingId === b.groupBookingId);
         amount = groupItems.reduce((sum, item) => sum + (parseFloat(item.amountPaid) || 0), 0);
         totalAmount = groupItems.reduce((sum, item) => sum + (parseFloat(item.totalAmount) || 0), 0);
         discount = groupItems.reduce((sum, item) => sum + (parseFloat(item.discount) || 0), 0);
+        if (!historyToUse) {
+          const found = groupItems.find(gb => gb.paymentHistory);
+          if (found) historyToUse = found.paymentHistory;
+        }
+      }
+
+      if (historyToUse) {
+        try {
+          const parsedH = typeof historyToUse === 'string' ? JSON.parse(historyToUse) : historyToUse;
+          if (Array.isArray(parsedH) && parsedH.length > 0) {
+            amount = parsedH.reduce((sum, item) => sum + (parseFloat(item.amount) || 0), 0);
+          }
+        } catch (e) { }
       }
 
       const gstRate = Number(b.gstRate !== undefined && b.gstRate !== null ? b.gstRate : defaultGstRate);
       const gstOption = b.gstOption || 'none';
-
-      totalRevenue += amount;
 
       const groupBookingIds = b.groupBookingId 
         ? allBookingsForStats.filter(gb => gb.groupBookingId === b.groupBookingId).map(gb => gb.id)
@@ -493,32 +577,44 @@ exports.getBillingSummary = async (req, res, next) => {
         }
       }
 
-      if (amount > grandTotal + 0.1) {
-        totalPayCustomer += (amount - grandTotal);
+      const periodRatio = (activeStartDate && activeEndDate) ? getBookingPeriodRatio(b, activeStartDate, activeEndDate) : 1;
+      if (periodRatio <= 0) return;
+
+      const roomGrand = Math.max(0, grandTotal - extraChargesTotal);
+      const proratedRoomGrand = roomGrand * periodRatio;
+      const periodGrandTotal = proratedRoomGrand + extraChargesTotal;
+      const periodSubTotal = bookingSubTotal * periodRatio;
+      const periodGst = bookingGst * periodRatio;
+      const periodAmount = amount * periodRatio;
+
+      totalRevenue += periodAmount;
+
+      if (periodAmount > periodGrandTotal + 0.1) {
+        totalPayCustomer += (periodAmount - periodGrandTotal);
       }
-      const bookingPending = Math.max(0, grandTotal - amount);
+      const bookingPending = Math.max(0, periodGrandTotal - periodAmount);
       pendingDues += bookingPending;
 
-      taxableAmount += bookingSubTotal;
-      totalGst += bookingGst;
-      monthlyGst += bookingGst;
+      taxableAmount += periodSubTotal;
+      totalGst += periodGst;
+      monthlyGst += periodGst;
 
       if (b.status === 'Completed') {
-        checkoutRoomGst += bookingGst;
+        checkoutRoomGst += periodGst;
       } else {
-        notCheckoutRoomGst += bookingGst;
+        notCheckoutRoomGst += periodGst;
       }
 
       if (bDate.getMonth() === currentMonth && bDate.getFullYear() === currentYear) {
-        monthlyRevenue += amount;
+        monthlyRevenue += periodAmount;
       } else if (bDate.getMonth() === lastMonth && bDate.getFullYear() === lastMonthYear) {
-        lastMonthRevenue += amount;
+        lastMonthRevenue += periodAmount;
       }
 
       if (b.bookingType === 'OTA' || b.bookingType === 'Online') {
-        otaRevenue += totalAmount;
+        otaRevenue += (totalAmount * periodRatio);
       } else {
-        directRevenue += totalAmount;
+        directRevenue += (totalAmount * periodRatio);
       }
     });
 
@@ -559,13 +655,22 @@ exports.getBillingSummary = async (req, res, next) => {
 
     if (search) {
       const cleanSearch = search.replace(/^[rR][- ]?/, '');
-      paginatedWhere[Op.or] = [
+      // Strip common invoice prefixes like "INV-", "inv-", etc. to get the numeric part
+      const invoiceNumericPart = search.replace(/^[a-zA-Z]*[-\s]*/g, '').trim();
+      const searchConditions = [
         { guestName: { [Op.like]: `%${search}%` } },
         { phone: { [Op.like]: `%${search}%` } },
         { registrationNumber: { [Op.like]: `%${search}%` } },
         { previousRoomNumber: { [Op.like]: `%${cleanSearch}%` } },
-        { '$Room.roomNumber$': { [Op.like]: `%${cleanSearch}%` } }
+        { '$Room.roomNumber$': { [Op.like]: `%${cleanSearch}%` } },
+        { invoiceNumber: { [Op.like]: `%${search}%` } },
+        { groupBookingId: { [Op.like]: `%${search}%` } }
       ];
+      // If the search looks like a number, also search by booking id (used in generated invoice numbers like INV-5)
+      if (invoiceNumericPart && !isNaN(invoiceNumericPart)) {
+        searchConditions.push({ id: parseInt(invoiceNumericPart, 10) });
+      }
+      paginatedWhere[Op.or] = searchConditions;
     }
 
     let recentBillsMapped = [];
@@ -650,6 +755,19 @@ exports.getBillingSummary = async (req, res, next) => {
           if (b.groupBookingId) {
             const gbs = await Booking.findAll({ where: { groupBookingId: b.groupBookingId, hotelId: req.user.hotelId } });
             amountPaid = gbs.reduce((sum, gb) => sum + Number(gb.amountPaid || 0), 0);
+            let gHistory = b.paymentHistory;
+            if (!gHistory) {
+              const f = gbs.find(gb => gb.paymentHistory);
+              if (f) gHistory = f.paymentHistory;
+            }
+            if (gHistory) {
+              try {
+                const parsedH = typeof gHistory === 'string' ? JSON.parse(gHistory) : gHistory;
+                if (Array.isArray(parsedH) && parsedH.length > 0) {
+                  amountPaid = parsedH.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+                }
+              } catch (e) { }
+            }
             let groupGrandRooms = 0;
 
             gbs.forEach(item => {
@@ -675,6 +793,14 @@ exports.getBillingSummary = async (req, res, next) => {
             grandTotal = groupGrandRooms + extraChargesTotal;
           } else {
             amountPaid = Number(b.amountPaid || 0);
+            if (b.paymentHistory) {
+              try {
+                const parsedH = typeof b.paymentHistory === 'string' ? JSON.parse(b.paymentHistory) : b.paymentHistory;
+                if (Array.isArray(parsedH) && parsedH.length > 0) {
+                  amountPaid = parsedH.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+                }
+              } catch (e) { }
+            }
             const baseAmount = Number(b.totalAmount || 0);
             const discount = Number(b.discount || 0);
             const roomBase = Math.max(0, baseAmount - discount);
@@ -693,7 +819,10 @@ exports.getBillingSummary = async (req, res, next) => {
             }
           }
 
-          const pending = grandTotal - amountPaid;
+          const pRatio = (activeStartDate && activeEndDate) ? getBookingPeriodRatio(b, activeStartDate, activeEndDate) : 1;
+          const periodGrandTotal = (grandTotal - extraChargesTotal) * pRatio + extraChargesTotal;
+          const periodAmountPaid = amountPaid * pRatio;
+          const pending = periodGrandTotal - periodAmountPaid;
           const isPayCustomer = pending < -0.1;
           const isPaid = !isPayCustomer && pending <= 0.1;
           const isPending = !isPayCustomer && pending > 0.1;
@@ -1006,10 +1135,11 @@ exports.getTransactions = async (req, res, next) => {
     const Expense = require('../models/Expense');
     const { startDate, endDate } = req.query;
 
-    // Fetch Bookings with Room association to get room number
+    // Fetch Bookings with Room association to get room number (ordered chronologically)
     const bookings = await Booking.findAll({
       where: { hotelId: req.user.hotelId },
-      include: [{ model: Room, attributes: ['roomNumber'] }]
+      include: [{ model: Room, attributes: ['roomNumber'] }],
+      order: [['createdAt', 'ASC'], ['id', 'ASC']]
     });
 
     const transactions = [];
@@ -1023,6 +1153,8 @@ exports.getTransactions = async (req, res, next) => {
       }
       bookingGroups[groupKey].push(b);
     });
+
+    let cumulativePaymentCount = 0;
 
     // 1. Process Booking Payments
     Object.keys(bookingGroups).forEach(groupKey => {
@@ -1058,6 +1190,13 @@ exports.getTransactions = async (req, res, next) => {
       }
 
       history.forEach((item, idx) => {
+        cumulativePaymentCount++;
+        const itemSerial = (item.serialNumber && String(item.serialNumber).trim())
+          ? String(item.serialNumber).trim()
+          : (item.receiptNumber && String(item.receiptNumber).trim())
+            ? String(item.receiptNumber).trim()
+            : String(cumulativePaymentCount);
+
         // Normalize date from DD-MM-YYYY to YYYY-MM-DD for standard sorting/filtering
         let normDate = '';
         if (item.date) {
@@ -1088,7 +1227,8 @@ exports.getTransactions = async (req, res, next) => {
           time: item.time || new Date(repBooking.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
           timestamp: new Date(normDate + 'T12:00:00'),
           createdAt: repBooking.createdAt,
-          invoiceNumber: repBooking.invoiceNumber || null
+          invoiceNumber: repBooking.invoiceNumber || null,
+          serialNumber: itemSerial
         });
       });
     });
@@ -1099,11 +1239,13 @@ exports.getTransactions = async (req, res, next) => {
         hotelId: req.user.hotelId,
         paymentMode: { [Op.ne]: 'Room Charge' },
         status: 'Served'
-      }
+      },
+      order: [['createdAt', 'ASC'], ['id', 'ASC']]
     });
 
-    directKots.forEach(kot => {
+    directKots.forEach((kot, kotIdx) => {
       const dateStr = new Date(kot.createdAt).toISOString().split('T')[0];
+      const kotSerial = kot.kotNumber ? String(kot.kotNumber) : String(kotIdx + 1);
       transactions.push({
         id: `kot-sale-${kot.id}`,
         type: 'Income',
@@ -1114,16 +1256,22 @@ exports.getTransactions = async (req, res, next) => {
         date: dateStr,
         time: new Date(kot.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
         timestamp: new Date(kot.createdAt),
-        createdAt: kot.createdAt
+        createdAt: kot.createdAt,
+        serialNumber: kotSerial
       });
     });
 
     // 3. Process Hotel Expenses
     const expenses = await Expense.findAll({
-      where: { hotelId: req.user.hotelId }
+      where: { hotelId: req.user.hotelId },
+      order: [['date', 'ASC'], ['createdAt', 'ASC'], ['id', 'ASC']]
     });
 
-    expenses.forEach(exp => {
+    expenses.forEach((exp, expIdx) => {
+      const expSerial = (exp.serialNumber && String(exp.serialNumber).trim())
+        ? String(exp.serialNumber).trim()
+        : String(expIdx + 1);
+
       transactions.push({
         id: `expense-${exp.id}`,
         type: 'Expense',
@@ -1135,7 +1283,8 @@ exports.getTransactions = async (req, res, next) => {
         date: exp.date,
         time: new Date(exp.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }),
         timestamp: new Date(exp.date + 'T12:00:00'),
-        createdAt: exp.createdAt
+        createdAt: exp.createdAt,
+        serialNumber: expSerial
       });
     });
 

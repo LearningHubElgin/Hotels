@@ -31,7 +31,8 @@ const Expenses = () => {
     date: new Date().toISOString().split('T')[0],
     description: '',
     paymentMode: 'Cash',
-    paymentBank: ''
+    paymentBank: '',
+    serialNumber: ''
   });
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -62,6 +63,18 @@ const Expenses = () => {
 
   const handleOpenAddModal = () => {
     setEditingExpense(null);
+    let maxSeq = 0;
+    expenses.forEach(e => {
+      if (e.serialNumber) {
+        const match = String(e.serialNumber).match(/(\d+)$/);
+        if (match) {
+          const num = parseInt(match[1], 10);
+          if (num > maxSeq) maxSeq = num;
+        }
+      }
+    });
+    const nextSerial = String(Math.max(maxSeq, expenses.length) + 1);
+
     setFormData({
       title: '',
       category: 'Food & Beverage',
@@ -69,7 +82,8 @@ const Expenses = () => {
       date: new Date().toISOString().split('T')[0],
       description: '',
       paymentMode: 'Cash',
-      paymentBank: ''
+      paymentBank: '',
+      serialNumber: nextSerial
     });
     setErrorMsg('');
     setIsModalOpen(true);
@@ -84,7 +98,8 @@ const Expenses = () => {
       date: exp.date,
       description: exp.description || '',
       paymentMode: exp.paymentMode || 'Cash',
-      paymentBank: exp.paymentBank || ''
+      paymentBank: exp.paymentBank || '',
+      serialNumber: exp.serialNumber || ''
     });
     setErrorMsg('');
     setIsModalOpen(true);
@@ -232,6 +247,7 @@ const Expenses = () => {
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="bg-[#F5F7F0] border-b border-[#DDE5D0] text-[#4A5E38] text-xs sm:text-sm font-extrabold uppercase tracking-wider select-none">
+                    <th className="px-4 py-3">Serial No.</th>
                     <th className="px-4 py-3">Date</th>
                     <th className="px-4 py-3">Title</th>
                     <th className="px-4 py-3">Category</th>
@@ -242,10 +258,15 @@ const Expenses = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#DDE5D0]/30 text-xs sm:text-sm text-[#1A2E05] font-bold">
-                  {expenses.map((exp) => {
+                  {expenses.map((exp, expIdx) => {
                     const modeLower = (exp.paymentMode || '').toLowerCase();
                     return (
                       <tr key={exp.id} className="hover:bg-[#F5F7F0]/30 transition-colors">
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-black bg-[#EEF4E3] border border-[#D3E2BD] text-[#1A2E05]">
+                            #{exp.serialNumber || (expIdx + 1)}
+                          </span>
+                        </td>
                         <td className="px-4 py-3 whitespace-nowrap text-[#4A5E38]">
                           {exp.date.split('-').reverse().join('-')}
                         </td>
@@ -322,6 +343,23 @@ const Expenses = () => {
                   <span>{errorMsg}</span>
                 </div>
               )}
+
+              {/* Serial / Voucher Number */}
+              <div className="space-y-0.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[9px] font-bold text-[#4A5E38]">Serial / Voucher No.</label>
+                  <span className="text-[8px] font-bold text-[#84A63C] bg-[#F5F7F0] px-1.5 py-0.5 rounded border border-[#DDE5D0]">
+                    Auto-Generated
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  placeholder="e.g. 1, 2, 3"
+                  value={formData.serialNumber || ''}
+                  onChange={(e) => setFormData({ ...formData, serialNumber: e.target.value })}
+                  className="w-full px-2.5 py-1.5 bg-[#F5F7F0] border border-[#DDE5D0] rounded-lg text-[10px] font-bold focus:outline-none focus:border-[#84A63C] focus:bg-white text-[#1A2E05]"
+                />
+              </div>
 
               {/* Title */}
               <div className="space-y-0.5">

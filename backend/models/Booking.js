@@ -248,12 +248,17 @@ const Booking = sequelize.define('Booking', {
     allowNull: true
   },
   shiftDate: {
-    type: DataTypes.DATEONLY,
+    type: DataTypes.STRING,
     allowNull: true
   },
   shiftTime: {
     type: DataTypes.STRING,
     allowNull: true
+  },
+  sameDayChargeOption: {
+    type: DataTypes.STRING,
+    allowNull: true,
+    defaultValue: 'no_charge'
   },
   paymentHistory: {
     type: DataTypes.TEXT,
@@ -278,6 +283,10 @@ const Booking = sequelize.define('Booking', {
   earlyCheckInType: {
     type: DataTypes.STRING,
     defaultValue: 'full_day'
+  },
+  pricePerNight: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true
   }
 }, {
   timestamps: true,

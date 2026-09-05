@@ -1,12 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Calendar, Download, FileText, Filter, Users, Hotel, LogIn, LogOut, CheckCircle2,
-  Search, ArrowUpDown, ArrowUp, ArrowDown, RefreshCw, Layers
+  Search, ArrowUpDown, ArrowUp, ArrowDown, RefreshCw, Layers, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import api from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
 import { generateGeneralReportPdf } from '../../../utils/generalReportPdfGenerator';
 import { getAutoRegNo } from '../../../utils/registrationNumberGenerator';
+import { cleanRoomNumber } from '../../../utils/roomHelper';
 
 const parseLocalDate = (dateStr) => {
   if (!dateStr) return null;
@@ -25,6 +26,22 @@ const formatDateDMY = (dateStr) => {
   return dateStr;
 };
 
+const convert12hrTo24hr = (time12) => {
+  if (!time12) return '12:00';
+  const str = String(time12).trim();
+  const match = str.match(/(\d+):(\d+)(?::\d+)?\s*(AM|PM)?/i);
+  if (!match) {
+    if (str.includes(':')) return str.substring(0, 5);
+    return '12:00';
+  }
+  let hours = parseInt(match[1], 10);
+  const minutes = match[2].padStart(2, '0');
+  const ampm = match[3] ? match[3].toUpperCase() : null;
+  if (ampm === "PM" && hours < 12) hours += 12;
+  if (ampm === "AM" && hours === 12) hours = 0;
+  return `${hours.toString().padStart(2, '0')}:${minutes}`;
+};
+
 const BILLING_FETCH_LIMIT = 10000;
 
 const getBookingStayDays = (b) => {
@@ -36,7 +53,19 @@ const getBookingStayDays = (b) => {
     if (d1Str === d2Str) return 1;
     const d1 = new Date(d1Str);
     const d2 = new Date(d2Str);
-    const nDiff = Math.max(1, Math.ceil(Math.abs(d2 - d1) / (1000 * 60 * 60 * 24)));
+    let nDiff = Math.max(1, Math.ceil(Math.abs(d2 - d1) / (1000 * 60 * 60 * 24)));
+
+    // Check out time: checkout after 12:00 PM counts departure day as extra day
+    const chkOutTime = b.checkOutTime;
+    if (d1Str && d2Str && chkOutTime && d1Str < d2Str) {
+      try {
+        const tOut = convert12hrTo24hr(chkOutTime);
+        if (tOut > "12:00") {
+          nDiff += 1;
+        }
+      } catch (e) {}
+    }
+
     if (!isNaN(nDiff)) return nDiff;
   }
   return 1;
@@ -52,13 +81,16 @@ const calculateBookingFinancials = (b) => {
   let totalRoomSubTotal = 0;
   let totalRoomGstAmount = 0;
   let totalRoomGrandTotal = 0;
+  let totalDiscount = 0;
 
   groupItems.forEach((gb, index) => {
     const rawEarlyAmt = (index === 0 && gb.chargePreviousDay && gb.earlyCheckInType === 'custom_fee') ? Number(gb.earlyCheckInCharge || 0) : 0;
-    const rBase = Number(gb.totalAmount || 0);
     const rDiscount = Number(gb.discount || 0);
+    totalDiscount += rDiscount;
     const rGstRate = (gb.gstRate !== undefined && gb.gstRate !== null) ? Number(gb.gstRate) : fallbackRate;
     const effectiveRate = gstOption === 'none' ? 0 : rGstRate;
+
+    let rBase = Number(gb.totalAmount || 0);
 
     let rSub = 0;
     let rGst = 0;
@@ -70,10 +102,6 @@ const calculateBookingFinancials = (b) => {
       rGrand = rSub + rGst;
     } else if (gstOption === 'inclusive') {
       let roomGrand = Math.max(0, rBase - rDiscount) + rawEarlyAmt;
-      const paidAmt = Number(gb.amountPaid || b.amountPaid || 0);
-      if (paidAmt > roomGrand && Math.abs(paidAmt - Math.round(roomGrand * (1 + effectiveRate / 100))) < 1.5) {
-        roomGrand = paidAmt;
-      }
       rGrand = roomGrand;
       rSub = effectiveRate > 0 ? Math.round((rGrand / (1 + effectiveRate / 100)) * 100) / 100 : rGrand;
       rGst = Math.round((rGrand - rSub) * 100) / 100;
@@ -163,7 +191,8 @@ const calculateBookingFinancials = (b) => {
     cgst,
     sgst,
     grandTotal,
-    gstRate: fallbackRate
+    gstRate: fallbackRate,
+    discount: totalDiscount
   };
 };
 
@@ -226,105 +255,466 @@ const getBookingStayDaysInPeriod = (b, tab, periodInfo) => {
 };
 
 const getBookingPeriodFinancials = (b, tab, periodInfo) => {
-  const fin = calculateBookingFinancials(b);
-  const totalDays = getBookingStayDays(b);
-  const periodDays = getBookingStayDaysInPeriod(b, tab, periodInfo);
-
-  const isAllTime = tab === 'alltime';
-  const ratio = (isAllTime || totalDays <= 0) ? 1 : Math.min(1, periodDays / totalDays);
-
-  const rBaseAmt = isAllTime ? fin.roomSubTotal : (totalDays > 0 ? Math.round((fin.roomSubTotal * ratio) * 100) / 100 : fin.roomSubTotal);
-  const rRoomGst = isAllTime ? fin.roomGst : (totalDays > 0 ? Math.round((fin.roomGst * ratio) * 100) / 100 : fin.roomGst);
-
-  let extraSubTotal = 0;
-  let extraGst = 0;
-
-  if (isAllTime) {
-    extraSubTotal = fin.extraSubTotal;
-    extraGst = fin.extraGst;
-  } else if (b.extraChargesList && Array.isArray(b.extraChargesList) && b.extraChargesList.length > 0) {
-    const periodExtras = b.extraChargesList.filter(ec => {
-      const ecDate = ec.createdAt || ec.date;
-      if (!ecDate) return true;
-      const cleanDate = String(ecDate).split('T')[0];
-      if (tab === 'daily') return cleanDate === periodInfo.selectedDate;
-      if (tab === 'weekly') return cleanDate >= periodInfo.selectedWeekStart && cleanDate <= periodInfo.selectedWeekEnd;
-      if (tab === 'monthly') {
-        const tD = parseLocalDate(cleanDate);
-        return tD && tD.getMonth() === Number(periodInfo.selectedMonth) && tD.getFullYear() === Number(periodInfo.selectedYear);
-      }
-      if (tab === 'yearly') {
-        const tD = parseLocalDate(cleanDate);
-        return tD && tD.getFullYear() === Number(periodInfo.selectedYear);
-      }
-      if (tab === 'custom') return cleanDate >= periodInfo.startDate && cleanDate <= periodInfo.endDate;
-      return true;
-    });
-
-    if (periodExtras.length > 0) {
-      let pSub = 0;
-      let pGst = 0;
-      periodExtras.forEach(item => {
-        const qtyNum = Number(item.qty || item.quantity || 1);
-        const priceNum = Number(item.price || item.amount || 0);
-        const itemSubtotal = qtyNum * priceNum;
-        const isInclusive = item.gstOption === 'inclusive' || (item.gstOption === undefined && (b.gstOption === 'inclusive' || true));
-        const isExclusive = item.gstOption === 'exclusive' || (item.gstOption === undefined && b.gstOption === 'exclusive');
-        const rateNum = Number(item.gstRate !== undefined && item.gstRate !== null ? item.gstRate : 0);
-
-        let itemBase = itemSubtotal;
-        let itemGst = 0;
-
-        if (item.grandTotal !== undefined && item.grandTotal !== null && Number(item.grandTotal) > 0) {
-          const grandTot = Number(item.grandTotal);
-          if (isInclusive && rateNum > 0) {
-            itemBase = Math.round((grandTot / (1 + rateNum / 100)) * 100) / 100;
-            itemGst = Math.round((grandTot - itemBase) * 100) / 100;
-          } else if (isExclusive && rateNum > 0) {
-            itemBase = itemSubtotal;
-            itemGst = Math.round((grandTot - itemBase) * 100) / 100;
-          } else {
-            itemBase = grandTot;
-            itemGst = 0;
-          }
-        } else {
-          if (isInclusive && rateNum > 0) {
-            itemBase = Math.round((itemSubtotal / (1 + rateNum / 100)) * 100) / 100;
-            itemGst = Math.round((itemSubtotal - itemBase) * 100) / 100;
-          } else if (isExclusive && rateNum > 0) {
-            itemBase = itemSubtotal;
-            itemGst = Math.round((itemSubtotal * (rateNum / 100)) * 100) / 100;
-          }
-        }
-
-        pSub += itemBase;
-        pGst += itemGst;
-      });
-
-      extraSubTotal = Math.round(pSub * 100) / 100;
-      extraGst = Math.round(pGst * 100) / 100;
-    }
-  } else {
-    extraSubTotal = fin.extraSubTotal;
-    extraGst = fin.extraGst;
+  if (!b) {
+    return {
+      stayDays: 0,
+      totalDays: 0,
+      baseAmount: 0,
+      discount: 0,
+      extraSubTotal: 0,
+      cgst: 0,
+      sgst: 0,
+      totalGst: 0,
+      grandTotal: 0,
+      roomGst: 0
+    };
   }
 
-  const rTotGstAmt = Math.round((rRoomGst + extraGst) * 100) / 100;
-  const rCgstAmt = Math.round((rTotGstAmt / 2) * 1000) / 1000;
-  const rSgstAmt = Math.round((rTotGstAmt / 2) * 1000) / 1000;
-  const rGrandAmt = Math.round((rBaseAmt + extraSubTotal + rTotGstAmt) * 100) / 100;
+  const totalDays = getBookingStayDays(b);
+
+  if (tab === 'alltime') {
+    const fin = calculateBookingFinancials(b);
+    return {
+      stayDays: totalDays,
+      totalDays,
+      baseAmount: fin.roomSubTotal,
+      discount: fin.discount || 0,
+      extraSubTotal: fin.extraSubTotal,
+      cgst: fin.cgst,
+      sgst: fin.sgst,
+      totalGst: fin.gstAmount,
+      grandTotal: fin.grandTotal,
+      roomGst: fin.roomGst
+    };
+  }
+
+  const groupItems = (b.groupBookings && b.groupBookings.length > 0) ? b.groupBookings : [b];
+  const gstOption = b.gstOption || 'exclusive';
+  const fallbackRate = (b.gstRate !== undefined && b.gstRate !== null) ? Number(b.gstRate) : 12;
+
+  const cInStr = b.checkInDate ? String(b.checkInDate).split('T')[0] : (b.createdAt ? String(b.createdAt).split('T')[0] : '');
+  const cOutStr = b.checkOutDate ? String(b.checkOutDate).split('T')[0] : cInStr;
+
+  const isLateCheckout = (() => {
+    if (b.checkOutTime && cInStr < cOutStr) {
+      try {
+        const tOut = convert12hrTo24hr(b.checkOutTime);
+        return tOut > "12:00";
+      } catch (e) {
+        return false;
+      }
+    }
+    return false;
+  })();
+
+  // Generate list of distinct stay dates for this booking
+  const stayDates = [];
+  if (cInStr) {
+    if (cInStr === cOutStr) {
+      stayDates.push(cInStr);
+    } else {
+      let cur = parseLocalDate(cInStr);
+      const endLimit = parseLocalDate(cOutStr);
+      if (cur && endLimit) {
+        while (cur < endLimit) {
+          const y = cur.getFullYear();
+          const m = String(cur.getMonth() + 1).padStart(2, '0');
+          const d = String(cur.getDate()).padStart(2, '0');
+          stayDates.push(`${y}-${m}-${d}`);
+          cur = new Date(cur.getTime() + 86400000);
+        }
+        if (isLateCheckout) {
+          stayDates.push(cOutStr);
+        }
+      }
+    }
+  }
+
+  // Pure function to test whether a date string (YYYY-MM-DD) falls into selected period
+  const isDateInSelectedPeriod = (dStr) => {
+    if (!dStr) return false;
+    const cleanDate = String(dStr).split('T')[0];
+    if (tab === 'daily') return cleanDate === periodInfo.selectedDate;
+    if (tab === 'weekly') return cleanDate >= periodInfo.selectedWeekStart && cleanDate <= periodInfo.selectedWeekEnd;
+    if (tab === 'monthly') {
+      const tD = parseLocalDate(cleanDate);
+      return tD && tD.getFullYear() === Number(periodInfo.selectedYear) && tD.getMonth() === Number(periodInfo.selectedMonth);
+    }
+    if (tab === 'yearly') {
+      const tD = parseLocalDate(cleanDate);
+      return tD && tD.getFullYear() === Number(periodInfo.selectedYear);
+    }
+    if (tab === 'custom') return cleanDate >= periodInfo.startDate && cleanDate <= periodInfo.endDate;
+    return true;
+  };
+
+  // Filter stay dates that fall into this report period
+  const matchingStayDates = stayDates.filter(d => isDateInSelectedPeriod(d));
+  const periodStayDays = matchingStayDates.length;
+
+  let periodRoomSubTotal = 0;
+  let periodRoomGst = 0;
+  let periodRoomGrand = 0;
+  let periodDiscount = 0;
+
+  // Calculate room financials for each matching stay date
+  matchingStayDates.forEach(dStr => {
+    groupItems.forEach((gb, index) => {
+      const rGstRate = (gb.gstRate !== undefined && gb.gstRate !== null) ? Number(gb.gstRate) : fallbackRate;
+      const effectiveRate = gstOption === 'none' ? 0 : rGstRate;
+
+      // Early check-in fee on check-in day
+      const rawEarlyAmt = (index === 0 && dStr === cInStr && gb.chargePreviousDay && gb.earlyCheckInType === 'custom_fee')
+        ? Number(gb.earlyCheckInCharge || 0)
+        : 0;
+
+      // Calculate room rate for this room on date dStr
+      const pRm = cleanRoomNumber(gb.previousRoomNumber);
+      const cRm = cleanRoomNumber(gb.Room?.roomNumber || gb.roomNumber || gb.roomId || '101');
+      const isShifted = Boolean(pRm && pRm !== 'N/A' && pRm !== cRm);
+
+      const gbStayDays = getBookingStayDays(gb);
+
+      let curRate = Number(gb.pricePerNight || gb.roomRate || b.pricePerNight || b.roomRate || 0);
+      const prevRoomsList = String(gb.previousRoomNumber || '').split(/→|->|,|>/).map(s => cleanRoomNumber(s.trim())).filter(s => s && s !== 'N/A');
+      const prevRatesList = String(gb.previousRoomRate || '').split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
+      const shiftDateList = String(gb.shiftDate || b.shiftDate || '').split(/→|->|,|>/).map(s => s.trim()).filter(s => s && s !== 'Invalid date');
+
+      // Derive curRate if missing and shifted
+      if (!curRate && isShifted && gb.totalAmount && gbStayDays > 0) {
+        let prevSum = 0;
+        let prevDaysCount = 0;
+        prevRoomsList.forEach((rm, pIdx) => {
+          const pRate = prevRatesList[pIdx] !== undefined ? prevRatesList[pIdx] : (prevRatesList[0] || 0);
+          const stepStart = pIdx === 0 ? cInStr : (shiftDateList[pIdx - 1] || shiftDateList[0] || cInStr);
+          const stepEnd = shiftDateList[pIdx] || (pIdx === 0 ? (shiftDateList[0] || cInStr) : (shiftDateList[pIdx - 1] || cInStr));
+          let stepDays = 0;
+          if (stepEnd && stepStart && stepEnd > stepStart) {
+            stepDays = Math.ceil(Math.abs(new Date(stepEnd) - new Date(stepStart)) / (1000 * 60 * 60 * 24));
+          }
+          prevDaysCount += stepDays;
+          prevSum += stepDays * pRate;
+        });
+        const remDays = Math.max(1, gbStayDays - prevDaysCount);
+        const remTotal = Number(gb.totalAmount) - prevSum;
+        if (remTotal > 0 && remDays > 0) {
+          curRate = Math.round((remTotal / remDays) * 100) / 100;
+        } else {
+          curRate = Number(gb.Room?.pricePerNight || b.Room?.pricePerNight || 0);
+        }
+      } else if (!curRate) {
+        if (gb.totalAmount && gbStayDays > 0 && !isShifted) {
+          curRate = Number(gb.totalAmount) / gbStayDays;
+        } else {
+          curRate = Number(gb.Room?.pricePerNight || b.Room?.pricePerNight || 0);
+        }
+      }
+
+      // Determine rate for date dStr based on room shift schedule
+      let dayRate = curRate;
+      if (isShifted && prevRoomsList.length > 0) {
+        const firstShiftDate = shiftDateList[0] || (gb.updatedAt ? String(gb.updatedAt).split('T')[0] : '');
+        if (firstShiftDate && dStr < firstShiftDate) {
+          dayRate = prevRatesList[0] !== undefined ? prevRatesList[0] : curRate;
+        } else if (shiftDateList.length > 1) {
+          let matchedPrev = false;
+          for (let pIdx = 0; pIdx < shiftDateList.length - 1; pIdx++) {
+            if (dStr >= shiftDateList[pIdx] && dStr < shiftDateList[pIdx + 1]) {
+              dayRate = prevRatesList[pIdx + 1] !== undefined ? prevRatesList[pIdx + 1] : (prevRatesList[0] || curRate);
+              matchedPrev = true;
+              break;
+            }
+          }
+          if (!matchedPrev && dStr >= shiftDateList[shiftDateList.length - 1]) {
+            dayRate = curRate;
+          }
+        } else {
+          dayRate = curRate;
+        }
+      }
+
+      // Calculate room subtotal & GST for this day
+      let daySub = 0;
+      let dayGst = 0;
+      let dayGrand = 0;
+
+      if (gstOption === 'exclusive') {
+        daySub = dayRate + rawEarlyAmt;
+        dayGst = effectiveRate > 0 ? Math.round((daySub * (effectiveRate / 100)) * 100) / 100 : 0;
+        dayGrand = daySub + dayGst;
+      } else if (gstOption === 'inclusive') {
+        dayGrand = dayRate + rawEarlyAmt;
+        daySub = effectiveRate > 0 ? Math.round((dayGrand / (1 + effectiveRate / 100)) * 100) / 100 : dayGrand;
+        dayGst = Math.round((dayGrand - daySub) * 100) / 100;
+      } else {
+        daySub = dayRate + rawEarlyAmt;
+        dayGst = 0;
+        dayGrand = daySub;
+      }
+
+      periodRoomSubTotal += daySub;
+      periodRoomGst += dayGst;
+      periodRoomGrand += dayGrand;
+
+      // Prorated discount per day
+      const gbDiscount = Number(gb.discount || 0);
+      if (gbDiscount > 0 && gbStayDays > 0) {
+        periodDiscount += (gbDiscount / gbStayDays);
+      }
+    });
+  });
+
+  periodDiscount = Math.round(periodDiscount * 100) / 100;
+
+  // Extra Charges / Services belonging to this period
+  let extraSubTotal = 0;
+  let extraGstAmount = 0;
+  let extraGrandTotal = 0;
+
+  const extraChargesList = b.extraChargesList || [];
+  if (Array.isArray(extraChargesList) && extraChargesList.length > 0) {
+    extraChargesList.forEach(item => {
+      const ecDate = String(item.createdAt || item.date || '').split('T')[0];
+      if (!isDateInSelectedPeriod(ecDate)) return;
+
+      const qtyNum = Number(item.qty || item.quantity || 1);
+      const priceNum = Number(item.price || item.amount || 0);
+      const itemSubtotal = qtyNum * priceNum;
+      const isInclusive = item.gstOption === 'inclusive' || (item.gstOption === undefined && gstOption === 'inclusive');
+      const isExclusive = item.gstOption === 'exclusive' || (item.gstOption === undefined && gstOption === 'exclusive');
+      const rateNum = Number(item.gstRate !== undefined && item.gstRate !== null ? item.gstRate : fallbackRate);
+
+      let itemBase = itemSubtotal;
+      let itemGst = 0;
+      let itemGrand = itemSubtotal;
+
+      if (item.grandTotal !== undefined && item.grandTotal !== null && Number(item.grandTotal) > 0) {
+        itemGrand = Number(item.grandTotal);
+        if (isInclusive && rateNum > 0) {
+          itemBase = Math.round((itemGrand / (1 + rateNum / 100)) * 100) / 100;
+          itemGst = Math.round((itemGrand - itemBase) * 100) / 100;
+        } else if (isExclusive && rateNum > 0) {
+          itemBase = itemSubtotal;
+          itemGst = Math.round((itemGrand - itemBase) * 100) / 100;
+        } else {
+          itemBase = itemGrand;
+          itemGst = 0;
+        }
+      } else {
+        if (isInclusive && rateNum > 0) {
+          itemBase = Math.round((itemSubtotal / (1 + rateNum / 100)) * 100) / 100;
+          itemGst = Math.round((itemSubtotal - itemBase) * 100) / 100;
+          itemGrand = itemSubtotal;
+        } else if (isExclusive && rateNum > 0) {
+          itemBase = itemSubtotal;
+          itemGst = Math.round((itemSubtotal * (rateNum / 100)) * 100) / 100;
+          itemGrand = itemSubtotal + itemGst;
+        }
+      }
+
+      extraSubTotal += itemBase;
+      extraGstAmount += itemGst;
+      extraGrandTotal += itemGrand;
+    });
+  } else {
+    // If raw extraCharges exists and period matches checkInDate or alltime
+    const rawExtra = Number(b.extraCharges || b.extraServices || b.extraChargesTotal || 0);
+    if (rawExtra > 0 && isDateInSelectedPeriod(cInStr)) {
+      if (gstOption === 'exclusive') {
+        extraSubTotal = rawExtra;
+        extraGstAmount = fallbackRate > 0 ? Math.round((rawExtra * (fallbackRate / 100)) * 100) / 100 : 0;
+        extraGrandTotal = extraSubTotal + extraGstAmount;
+      } else if (gstOption === 'inclusive' || gstOption !== 'none') {
+        extraSubTotal = fallbackRate > 0 ? Math.round((rawExtra / (1 + fallbackRate / 100)) * 100) / 100 : rawExtra;
+        extraGstAmount = Math.round((rawExtra - extraSubTotal) * 100) / 100;
+        extraGrandTotal = rawExtra;
+      } else {
+        extraSubTotal = rawExtra;
+        extraGstAmount = 0;
+        extraGrandTotal = rawExtra;
+      }
+    }
+  }
+
+  // If period has no stay days and no extra charges, return zeros
+  if (periodStayDays === 0 && extraGrandTotal === 0) {
+    return {
+      stayDays: 0,
+      totalDays,
+      baseAmount: 0,
+      discount: 0,
+      extraSubTotal: 0,
+      cgst: 0,
+      sgst: 0,
+      totalGst: 0,
+      grandTotal: 0,
+      roomGst: 0
+    };
+  }
+
+  const baseAmount = Math.max(0, periodRoomSubTotal - periodDiscount);
+  const totalGst = Math.round((periodRoomGst + extraGstAmount) * 100) / 100;
+  const cgst = Math.round((totalGst / 2) * 1000) / 1000;
+  const sgst = Math.round((totalGst / 2) * 1000) / 1000;
+  const grandTotal = Math.round((periodRoomGrand - periodDiscount + extraGrandTotal) * 100) / 100;
 
   return {
-    stayDays: periodDays,
+    stayDays: periodStayDays || 1,
     totalDays,
-    baseAmount: rBaseAmt,
-    extraSubTotal,
-    cgst: rCgstAmt,
-    sgst: rSgstAmt,
-    totalGst: rTotGstAmt,
-    grandTotal: rGrandAmt,
-    roomGst: rRoomGst
+    baseAmount: Math.round(baseAmount * 100) / 100,
+    discount: periodDiscount,
+    extraSubTotal: Math.round(extraSubTotal * 100) / 100,
+    cgst,
+    sgst,
+    totalGst,
+    grandTotal,
+    roomGst: Math.round(periodRoomGst * 100) / 100
   };
+};
+
+const getRoomRatesBreakdown = (b, activeTab, selectedDate) => {
+  const groupItems = (b.groupBookings && b.groupBookings.length > 0) ? b.groupBookings : [b];
+  const gstOption = b.gstOption || 'exclusive';
+  const fallbackGstRate = Number(b.gstRate !== undefined ? b.gstRate : 5);
+
+  const getBaseRate = (rateVal, totalAmt, stayNights, gbGstRate) => {
+    let rate = Number(rateVal || 0);
+    if (!rate && totalAmt && stayNights > 0) {
+      rate = Number(totalAmt) / stayNights;
+    }
+    const rateGst = Number(gbGstRate !== undefined && gbGstRate !== null ? gbGstRate : fallbackGstRate);
+    if (gstOption === 'inclusive' && rateGst > 0 && rate > 0) {
+      rate = Math.round((rate / (1 + rateGst / 100)) * 100) / 100;
+    }
+    return rate;
+  };
+
+  const lines = [];
+  const isDaily = activeTab === 'daily';
+
+  groupItems.forEach(gb => {
+    const pRm = cleanRoomNumber(gb.previousRoomNumber);
+    const cRm = cleanRoomNumber(gb.Room?.roomNumber || gb.roomNumber || gb.roomId || '101');
+    const isShifted = Boolean(pRm && pRm !== 'N/A' && pRm !== cRm);
+    const stayDays = getBookingStayDays(gb);
+
+    const gbGstRate = gb.gstRate !== undefined && gb.gstRate !== null ? gb.gstRate : fallbackGstRate;
+    let rawCurRate = Number(gb.pricePerNight || gb.roomRate || b.pricePerNight || b.roomRate || 0);
+    const prevRoomsList = String(gb.previousRoomNumber || '').split(/→|->|,|>/).map(s => cleanRoomNumber(s.trim())).filter(s => s && s !== 'N/A');
+    const prevRatesList = String(gb.previousRoomRate || '').split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
+    const shiftDateList = String(gb.shiftDate || b.shiftDate || '').split(/→|->|,|>/).map(s => s.trim()).filter(s => s && s !== 'Invalid date');
+
+    if (!rawCurRate) {
+      if (isShifted && gb.totalAmount && stayDays > 0) {
+        let prevSum = 0;
+        let prevDaysCount = 0;
+        prevRoomsList.forEach((rm, pIdx) => {
+          const pRate = prevRatesList[pIdx] !== undefined ? prevRatesList[pIdx] : (prevRatesList[0] || 0);
+          const stepStart = pIdx === 0 ? gb.checkInDate : (shiftDateList[pIdx - 1] || shiftDateList[0] || gb.checkInDate);
+          const stepEnd = shiftDateList[pIdx] || (pIdx === 0 ? (shiftDateList[0] || gb.checkInDate) : (shiftDateList[pIdx - 1] || gb.checkInDate));
+          let stepDays = 0;
+          if (stepEnd && stepStart && stepEnd > stepStart) {
+            stepDays = Math.ceil(Math.abs(new Date(stepEnd) - new Date(stepStart)) / (1000 * 60 * 60 * 24));
+          }
+          prevDaysCount += stepDays;
+          prevSum += stepDays * pRate;
+        });
+        const remDays = Math.max(1, stayDays - prevDaysCount);
+        const remTotal = Number(gb.totalAmount) - prevSum;
+        if (remTotal > 0 && remDays > 0) {
+          rawCurRate = Math.round((remTotal / remDays) * 100) / 100;
+        } else {
+          rawCurRate = Number(gb.Room?.pricePerNight || b.Room?.pricePerNight || 0);
+        }
+      } else if (gb.totalAmount && stayDays > 0 && !isShifted) {
+        rawCurRate = Number(gb.totalAmount) / stayDays;
+      } else {
+        rawCurRate = Number(gb.Room?.pricePerNight || b.Room?.pricePerNight || 0);
+      }
+    }
+    const curRate = getBaseRate(rawCurRate, gb.totalAmount, stayDays, gbGstRate);
+
+    if (isShifted && prevRoomsList.length > 0) {
+      if (isDaily && selectedDate) {
+        const firstShiftDate = shiftDateList[0] || (gb.updatedAt ? String(gb.updatedAt).split('T')[0] : '');
+        if (firstShiftDate && selectedDate < firstShiftDate) {
+          const rawPRate = prevRatesList[0] || rawCurRate;
+          lines.push({
+            roomNumber: prevRoomsList[0] || pRm,
+            rate: getBaseRate(rawPRate, 0, 1, gbGstRate),
+            isShiftPrev: true
+          });
+        } else if (shiftDateList.length > 1) {
+          let matchedPrev = false;
+          for (let pIdx = 0; pIdx < shiftDateList.length - 1; pIdx++) {
+            if (selectedDate >= shiftDateList[pIdx] && selectedDate < shiftDateList[pIdx + 1]) {
+              const rawPRate = prevRatesList[pIdx + 1] !== undefined ? prevRatesList[pIdx + 1] : (prevRatesList[0] || rawCurRate);
+              lines.push({
+                roomNumber: prevRoomsList[pIdx + 1] || pRm,
+                rate: getBaseRate(rawPRate, 0, 1, gbGstRate),
+                isShiftPrev: true
+              });
+              matchedPrev = true;
+              break;
+            }
+          }
+          if (!matchedPrev) {
+            lines.push({
+              roomNumber: cRm,
+              rate: curRate,
+              isShiftPrev: false
+            });
+          }
+        } else {
+          lines.push({
+            roomNumber: cRm,
+            rate: curRate,
+            isShiftPrev: false
+          });
+        }
+      } else {
+        const seenChain = new Set();
+        prevRoomsList.forEach((rmItem, pIdx) => {
+          const rawPRate = prevRatesList[pIdx] || prevRatesList[0] || rawCurRate;
+          const pRate = getBaseRate(rawPRate, 0, 1, gbGstRate);
+          const key = `${rmItem}_${pRate}`;
+          if (!seenChain.has(key)) {
+            seenChain.add(key);
+            lines.push({
+              roomNumber: rmItem,
+              rate: pRate,
+              isShiftPrev: true
+            });
+          }
+        });
+
+        const curKey = `${cRm}_${curRate}`;
+        if (!seenChain.has(curKey) || prevRoomsList.length === 0) {
+          lines.push({
+            roomNumber: cRm,
+            rate: curRate,
+            isShiftPrev: false
+          });
+        }
+      }
+    } else {
+      lines.push({
+        roomNumber: cRm,
+        rate: curRate,
+        isShiftPrev: false
+      });
+    }
+  });
+
+  return lines;
+};
+
+const formatBookingRoomRatesText = (b, activeTab, selectedDate) => {
+  const breakdown = getRoomRatesBreakdown(b, activeTab, selectedDate);
+  if (breakdown.length === 1) {
+    return breakdown[0].rate ? `₹${breakdown[0].rate.toLocaleString('en-IN')}` : 'N/A';
+  }
+  return breakdown.map(item => `${item.roomNumber} → ₹${item.rate.toLocaleString('en-IN')}`).join(' | ');
 };
 
 const Report = () => {
@@ -356,6 +746,40 @@ const Report = () => {
 
   const [sortField, setSortField] = useState('date');
   const [sortOrder, setSortOrder] = useState('desc');
+
+  // Top scrollbar & synchronized scroll refs
+  const topScrollRef = useRef(null);
+  const tableContainerRef = useRef(null);
+  const tableRef = useRef(null);
+  const [tableScrollWidth, setTableScrollWidth] = useState(1200);
+
+  const handleTopScroll = () => {
+    if (topScrollRef.current && tableContainerRef.current) {
+      tableContainerRef.current.scrollLeft = topScrollRef.current.scrollLeft;
+    }
+  };
+
+  const handleTableScroll = () => {
+    if (topScrollRef.current && tableContainerRef.current) {
+      topScrollRef.current.scrollLeft = tableContainerRef.current.scrollLeft;
+    }
+  };
+
+  useEffect(() => {
+    const updateScrollWidth = () => {
+      if (tableContainerRef.current) {
+        const sw = tableContainerRef.current.scrollWidth;
+        setTableScrollWidth(sw || 1200);
+      }
+    };
+    updateScrollWidth();
+    const timer = setTimeout(updateScrollWidth, 100);
+    window.addEventListener('resize', updateScrollWidth);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', updateScrollWidth);
+    };
+  }, [allBookings, activeTab, loading]);
 
   const getSelectedWeekEnd = () => {
     if (!selectedWeekStart) return '';
@@ -449,7 +873,11 @@ const Report = () => {
             if (!processedGroupIds.has(b.groupBookingId)) {
               processedGroupIds.add(b.groupBookingId);
               const groupItems = rawBills.filter(h => h.groupBookingId === b.groupBookingId);
-              const roomNums = groupItems.map(g => g.roomNumbers ? g.roomNumbers.join(', ') : (g.Room?.roomNumber || String(g.roomId || ''))).filter(Boolean);
+              const roomNums = groupItems.map(g => {
+                const prev = g.previousRoomNumber ? cleanRoomNumber(g.previousRoomNumber) : null;
+                const curr = cleanRoomNumber(g.Room?.roomNumber || (g.roomNumbers ? g.roomNumbers[0] : String(g.roomId || '')));
+                return prev && prev !== 'N/A' && prev !== curr ? `${prev} → ${curr}` : curr;
+              }).filter(Boolean);
               const uniqueRoomsStr = [...new Set(roomNums)].join(', ');
 
               uniqueBills.push({
@@ -464,20 +892,24 @@ const Report = () => {
             }
           } else {
             const bKey = b.id || b.invoiceNumber;
+            const prev = b.previousRoomNumber ? cleanRoomNumber(b.previousRoomNumber) : null;
+            const curr = cleanRoomNumber(b.Room?.roomNumber || (b.roomNumbers ? b.roomNumbers[0] : String(b.roomId || '')));
+            const singleRoomStr = prev && prev !== 'N/A' && prev !== curr ? `${prev} → ${curr}` : (curr || 'N/A');
+
             if (bKey && !processedBillIds.has(bKey)) {
               processedBillIds.add(bKey);
               uniqueBills.push({
                 ...bWithExtras,
                 isGroup: false,
                 groupBookings: [bWithExtras],
-                roomNumbersDisplay: b.roomNumbers ? b.roomNumbers.join(', ') : (b.Room?.roomNumber || 'N/A')
+                roomNumbersDisplay: singleRoomStr
               });
             } else if (!bKey) {
               uniqueBills.push({
                 ...bWithExtras,
                 isGroup: false,
                 groupBookings: [bWithExtras],
-                roomNumbersDisplay: b.roomNumbers ? b.roomNumbers.join(', ') : (b.Room?.roomNumber || 'N/A')
+                roomNumbersDisplay: singleRoomStr
               });
             }
           }
@@ -537,17 +969,32 @@ const Report = () => {
       return ecDate && isInSelectedPeriod(ecDate);
     });
 
+    const isLateCheckout = (() => {
+      if (b.checkOutTime && cIn < cOut) {
+        try {
+          const tOut = convert12hrTo24hr(b.checkOutTime);
+          return tOut > "12:00";
+        } catch (e) {
+          return false;
+        }
+      }
+      return false;
+    })();
+
     if (activeTab === 'daily') {
       if (cIn === cOut) {
         return selectedDate === cIn || hasExtraInPeriod;
       }
-      const isStayNight = selectedDate >= cIn && selectedDate < cOut;
+      const isStayNight = isLateCheckout ? (selectedDate >= cIn && selectedDate <= cOut) : (selectedDate >= cIn && selectedDate < cOut);
       return isStayNight || hasExtraInPeriod;
     }
 
     if (activeTab === 'weekly') {
       const wStart = selectedWeekStart;
       const wEnd = selectedWeekEnd;
+      if (cIn === cOut) {
+        return (cIn >= wStart && cIn <= wEnd) || hasExtraInPeriod;
+      }
       const overlap = cIn <= wEnd && cOut > wStart;
       return overlap || hasExtraInPeriod;
     }
@@ -556,6 +1003,9 @@ const Report = () => {
       const monthStart = `${selectedYear}-${String(Number(selectedMonth) + 1).padStart(2, '0')}-01`;
       const daysInM = new Date(selectedYear, Number(selectedMonth) + 1, 0).getDate();
       const monthEnd = `${selectedYear}-${String(Number(selectedMonth) + 1).padStart(2, '0')}-${String(daysInM).padStart(2, '0')}`;
+      if (cIn === cOut) {
+        return (cIn >= monthStart && cIn <= monthEnd) || hasExtraInPeriod;
+      }
       const overlap = cIn <= monthEnd && cOut > monthStart;
       return overlap || hasExtraInPeriod;
     }
@@ -563,11 +1013,17 @@ const Report = () => {
     if (activeTab === 'yearly') {
       const yearStart = `${selectedYear}-01-01`;
       const yearEnd = `${selectedYear}-12-31`;
+      if (cIn === cOut) {
+        return (cIn >= yearStart && cIn <= yearEnd) || hasExtraInPeriod;
+      }
       const overlap = cIn <= yearEnd && cOut > yearStart;
       return overlap || hasExtraInPeriod;
     }
 
     if (activeTab === 'custom') {
+      if (cIn === cOut) {
+        return (cIn >= startDate && cIn <= endDate) || hasExtraInPeriod;
+      }
       const overlap = cIn <= endDate && cOut > startDate;
       return overlap || hasExtraInPeriod;
     }
@@ -581,7 +1037,7 @@ const Report = () => {
     const q = searchQuery.toLowerCase();
     const guest = (b.guestName || '').toLowerCase();
     const bill = (b.invoiceNumber || b.id || '').toLowerCase();
-    const room = b.roomNumbers ? b.roomNumbers.join(', ').toLowerCase() : String(b.Room?.roomNumber || '').toLowerCase();
+    const room = (b.roomNumbersDisplay || (b.roomNumbers ? b.roomNumbers.join(', ') : String(b.Room?.roomNumber || ''))).toLowerCase();
     return guest.includes(q) || bill.includes(q) || room.includes(q);
   });
 
@@ -753,15 +1209,33 @@ const Report = () => {
       const pFin = getBookingPeriodFinancials(b, activeTab, periodInfo);
       const dateVal = isDaily ? selectedDate : (b.checkInDate || b.createdAt || 'N/A');
 
+      let roomNumStr = b.roomNumbersDisplay || (b.roomNumbers ? b.roomNumbers.join(', ') : (b.Room?.roomNumber || 'N/A'));
+      if (isDaily) {
+        const groupItems = (b.groupBookings && b.groupBookings.length > 0) ? b.groupBookings : [b];
+        const dailyRooms = groupItems.map(gb => {
+          const pRm = cleanRoomNumber(gb.previousRoomNumber);
+          const cRm = cleanRoomNumber(gb.Room?.roomNumber || gb.roomNumber || gb.roomId || '101');
+          const isShifted = Boolean(pRm && pRm !== 'N/A' && pRm !== cRm);
+          if (isShifted) {
+            const shiftDateStr = gb.shiftDate || b.shiftDate || (gb.updatedAt ? String(gb.updatedAt).split('T')[0] : '');
+            if (shiftDateStr && selectedDate >= shiftDateStr) return cRm;
+            return pRm;
+          }
+          return cRm;
+        }).filter(Boolean);
+        roomNumStr = dailyRooms.join(', ');
+      }
+
       return {
         date: formatDateDMY(dateVal),
         billNo: b.invoiceNumber || String(b.id || ''),
         guestName: b.guestName || 'Guest',
         company: b.companyName || b.company || b.Guest?.companyName || b.Guest?.company || 'N/A',
-        roomNumber: b.roomNumbersDisplay || (b.roomNumbers ? b.roomNumbers.join(', ') : (b.Room?.roomNumber || 'N/A')),
-        catalogRate: b.pricePerNight || b.roomRate || (b.totalAmount && pFin.totalDays ? (b.totalAmount / pFin.totalDays) : (b.Room?.pricePerNight || 0)),
+        roomNumber: roomNumStr,
+        catalogRate: formatBookingRoomRatesText(b, activeTab, selectedDate),
         stayDays: pFin.stayDays,
         baseAmount: pFin.baseAmount,
+        discount: pFin.discount || 0,
         extraService: pFin.extraSubTotal,
         cgst: pFin.cgst,
         sgst: pFin.sgst,
@@ -784,7 +1258,7 @@ const Report = () => {
   };
 
   const handleDownloadCSV = () => {
-    let csv = `Date,Billing No,Guest Name,Company,Room Number,Room Rate,Days,Charges,Extra Service / Food,CGST,SGST,TOTAL GST,TOTAL AMOUNT\n`;
+    let csv = `Date,Billing No,Guest Name,Company,Room Number,Room Rate,Days,Charges,Discount,Extra Service / Food,CGST,SGST,TOTAL GST,TOTAL AMOUNT\n`;
 
     const isDaily = activeTab === 'daily';
 
@@ -796,16 +1270,34 @@ const Report = () => {
       const companyVal = b.companyName || b.company || b.Guest?.companyName || b.Guest?.company || 'N/A';
       const escapedCompany = `"${companyVal.replace(/"/g, '""')}"`;
       const billNo = b.invoiceNumber || String(b.id || '');
-      const rawRoomStr = b.roomNumbersDisplay || (b.roomNumbers ? b.roomNumbers.join(', ') : String(b.Room?.roomNumber || 'N/A'));
+
+      let rawRoomStr = b.roomNumbersDisplay || (b.roomNumbers ? b.roomNumbers.join(', ') : String(b.Room?.roomNumber || 'N/A'));
+      if (isDaily) {
+        const groupItems = (b.groupBookings && b.groupBookings.length > 0) ? b.groupBookings : [b];
+        const dailyRooms = groupItems.map(gb => {
+          const pRm = cleanRoomNumber(gb.previousRoomNumber);
+          const cRm = cleanRoomNumber(gb.Room?.roomNumber || gb.roomNumber || gb.roomId || '101');
+          const isShifted = Boolean(pRm && pRm !== 'N/A' && pRm !== cRm);
+          if (isShifted) {
+            const shiftDateStr = gb.shiftDate || b.shiftDate || (gb.updatedAt ? String(gb.updatedAt).split('T')[0] : '');
+            if (shiftDateStr && selectedDate >= shiftDateStr) return cRm;
+            return pRm;
+          }
+          return cRm;
+        }).filter(Boolean);
+        rawRoomStr = dailyRooms.join(', ');
+      }
+
       const formattedRoomStr = rawRoomStr.toLowerCase().includes('room') ? rawRoomStr : `Room ${rawRoomStr}`;
       const escapedRoom = `"${formattedRoomStr.replace(/"/g, '""')}"`;
-      const catRate = b.pricePerNight || b.roomRate || (b.totalAmount && pFin.totalDays ? (b.totalAmount / pFin.totalDays) : (b.Room?.pricePerNight || 0));
+      const catRateText = formatBookingRoomRatesText(b, activeTab, selectedDate).replace(/₹/g, 'Rs. ');
+      const escapedCatRate = `"${catRateText.replace(/"/g, '""')}"`;
 
-      csv += `${dateStr},${billNo},${escapedName},${escapedCompany},${escapedRoom},${Number(catRate).toFixed(2)},${pFin.stayDays},${pFin.baseAmount.toFixed(2)},${pFin.extraSubTotal.toFixed(2)},${pFin.cgst.toFixed(3)},${pFin.sgst.toFixed(3)},${pFin.totalGst.toFixed(3)},${pFin.grandTotal.toFixed(2)}\n`;
+      csv += `${dateStr},${billNo},${escapedName},${escapedCompany},${escapedRoom},${escapedCatRate},${pFin.stayDays},${pFin.baseAmount.toFixed(2)},${(pFin.discount || 0).toFixed(2)},${pFin.extraSubTotal.toFixed(2)},${pFin.cgst.toFixed(3)},${pFin.sgst.toFixed(3)},${pFin.totalGst.toFixed(3)},${pFin.grandTotal.toFixed(2)}\n`;
     });
 
     if (sortedBookings.length > 0) {
-      csv += `Total (${sortedBookings.length} Records),,,,,,${tableTotals.baseAmount.toFixed(2)},${tableTotals.extraServices.toFixed(2)},${tableTotals.cgst.toFixed(3)},${tableTotals.sgst.toFixed(3)},${tableTotals.totalGst.toFixed(3)},${tableTotals.totalAmount.toFixed(2)}\n`;
+      csv += `Total (${sortedBookings.length} Records),,,,,,${tableTotals.baseAmount.toFixed(2)},${tableTotals.discount.toFixed(2)},${tableTotals.extraServices.toFixed(2)},${tableTotals.cgst.toFixed(3)},${tableTotals.sgst.toFixed(3)},${tableTotals.totalGst.toFixed(3)},${tableTotals.totalAmount.toFixed(2)}\n`;
     }
 
     // Appended Operational Summary Section at bottom
@@ -842,12 +1334,13 @@ const Report = () => {
 
     acc.extraServices += pFin.extraSubTotal;
     acc.baseAmount += pFin.baseAmount;
+    acc.discount += pFin.discount || 0;
     acc.cgst += pFin.cgst;
     acc.sgst += pFin.sgst;
     acc.totalGst += pFin.totalGst;
     acc.totalAmount += pFin.grandTotal;
     return acc;
-  }, { extraServices: 0, baseAmount: 0, cgst: 0, sgst: 0, totalGst: 0, totalAmount: 0 });
+  }, { extraServices: 0, baseAmount: 0, discount: 0, cgst: 0, sgst: 0, totalGst: 0, totalAmount: 0 });
 
   return (
     <div className="space-y-3.5 text-[#1A2E05] pb-8">
@@ -1011,29 +1504,77 @@ const Report = () => {
 
 
       {/* Detailed Transactions List Table */}
-      <div className="bg-white rounded-xl border border-[#DDE5D0] shadow-2xs overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-[#DDE5D0] bg-[#F9FAFA] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h2 className="text-xs font-black text-[#1A2E05] uppercase tracking-wider">Transactions Details</h2>
-            <p className="text-[11px] text-[#7A8A6A] font-medium mt-0.5">Showing {sortedBookings.length} booking billing records</p>
+      <div className="bg-white rounded-xl border border-[#DDE5D0] shadow-2xs">
+        {/* Sticky Header Section (Title, Scroll Controls, Search & Top Scrollbar) */}
+        <div className="sticky top-14 z-30 bg-[#F9FAFA] rounded-t-xl shadow-xs">
+          <div className="px-4 py-2.5 border-b border-[#DDE5D0] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xs font-black text-[#1A2E05] uppercase tracking-wider">Transactions Details</h2>
+              <p className="text-[11px] text-[#7A8A6A] font-medium mt-0.5">Showing {sortedBookings.length} booking billing records</p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Slide Left and Right Scroll Control Buttons */}
+              <div className="flex items-center gap-1 bg-[#F5F7F0] p-0.5 rounded-lg border border-[#DDE5D0]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (tableContainerRef.current) {
+                      tableContainerRef.current.scrollBy({ left: -250, behavior: 'smooth' });
+                    }
+                  }}
+                  className="px-2 py-1 text-[#4A5E38] hover:text-[#1A2E05] hover:bg-[#EEF4E3] rounded-md transition-all flex items-center gap-1 text-[11px] font-bold"
+                  title="Scroll Left"
+                >
+                  <ChevronLeft size={13} className="stroke-[2.5]" />
+                  <span className="hidden sm:inline">Left</span>
+                </button>
+                <div className="w-[1px] h-3.5 bg-[#DDE5D0]"></div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (tableContainerRef.current) {
+                      tableContainerRef.current.scrollBy({ left: 250, behavior: 'smooth' });
+                    }
+                  }}
+                  className="px-2 py-1 text-[#4A5E38] hover:text-[#1A2E05] hover:bg-[#EEF4E3] rounded-md transition-all flex items-center gap-1 text-[11px] font-bold"
+                  title="Scroll Right"
+                >
+                  <span className="hidden sm:inline">Right</span>
+                  <ChevronRight size={13} className="stroke-[2.5]" />
+                </button>
+              </div>
+
+              <div className="relative">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#7A8A6A]" />
+                <input
+                  type="text"
+                  placeholder="Search guest, bill, room..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-8 pr-3 py-1 bg-[#F5F7F0] border border-[#DDE5D0] rounded-lg text-xs font-semibold focus:outline-none focus:border-[#84A63C] w-44 sm:w-56"
+                />
+              </div>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#7A8A6A]" />
-              <input
-                type="text"
-                placeholder="Search guest, bill, room..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-8 pr-3 py-1 bg-[#F5F7F0] border border-[#DDE5D0] rounded-lg text-xs font-semibold focus:outline-none focus:border-[#84A63C] w-44 sm:w-56"
-              />
-            </div>
+          {/* Top Synchronized Horizontal Scrollbar */}
+          <div
+            ref={topScrollRef}
+            onScroll={handleTopScroll}
+            className="overflow-x-auto custom-scrollbar border-b border-[#DDE5D0]/60 bg-[#F9FAFA]"
+            style={{ width: '100%' }}
+          >
+            <div style={{ width: `${tableScrollWidth}px`, height: '8px' }}></div>
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left min-w-[850px]">
+        <div
+          ref={tableContainerRef}
+          onScroll={handleTableScroll}
+          className="overflow-x-auto custom-scrollbar rounded-b-xl"
+        >
+          <table ref={tableRef} className="w-full text-left min-w-[850px]">
             <thead>
               <tr className="bg-[#F5F7F0] border-b border-[#DDE5D0]">
                 <th
@@ -1094,6 +1635,7 @@ const Report = () => {
                 <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-right whitespace-nowrap">Room Rate</th>
                 <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-center whitespace-nowrap">Days</th>
                 <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-right whitespace-nowrap">Charges</th>
+                <th className="px-4 py-2.5 text-[10px] font-black text-orange-600 uppercase tracking-wider text-right whitespace-nowrap">Discount</th>
                 <th className="px-4 py-2.5 text-[10px] font-black text-[#5C7A1F] uppercase tracking-wider text-right max-w-[95px] whitespace-normal leading-tight">Extra Service / Food</th>
                 <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-right whitespace-nowrap">CGST</th>
                 <th className="px-4 py-2.5 text-[10px] font-black text-[#4A5E38] uppercase tracking-wider text-right whitespace-nowrap">SGST</th>
@@ -1129,7 +1671,7 @@ const Report = () => {
             <tbody className="divide-y divide-[#F0F3E8] text-xs">
               {loading ? (
                 <tr>
-                  <td colSpan={activeHotel?.enableRegistrationNumber === true ? 14 : 13} className="py-8 text-center text-[#4A5E38] font-bold">
+                  <td colSpan={activeHotel?.enableRegistrationNumber === true ? 15 : 14} className="py-8 text-center text-[#4A5E38] font-bold">
                     Loading report data...
                   </td>
                 </tr>
@@ -1156,10 +1698,118 @@ const Report = () => {
                       )}
                       <td className="px-4 py-2 font-bold text-[#1A2E05] min-w-[130px] max-w-[180px] whitespace-normal break-words leading-tight">{b.guestName || 'Guest'}</td>
                       <td className="px-4 py-2 font-semibold text-[#4A5E38] max-w-[170px] min-w-[120px] whitespace-normal break-words leading-tight">{companyStr}</td>
-                      <td className="px-4 py-2 font-bold text-[#1A2E05] whitespace-nowrap">{roomStr}</td>
-                      <td className="px-4 py-2 text-right font-medium whitespace-nowrap">{catRate ? formatCurrency(catRate) : 'N/A'}</td>
+                      <td className="px-4 py-2 font-bold text-[#1A2E05]">
+                        {(() => {
+                          const groupItems = (b.groupBookings && b.groupBookings.length > 0) ? b.groupBookings : [b];
+                          
+                          if (isDaily) {
+                            const dailyRooms = groupItems.map(gb => {
+                              const pRm = cleanRoomNumber(gb.previousRoomNumber);
+                              const cRm = cleanRoomNumber(gb.Room?.roomNumber || gb.roomNumber || gb.roomId || '101');
+                              const isShifted = Boolean(pRm && pRm !== 'N/A' && pRm !== cRm);
+                              if (isShifted) {
+                                const shiftDateStr = gb.shiftDate || b.shiftDate || (gb.updatedAt ? String(gb.updatedAt).split('T')[0] : '');
+                                if (shiftDateStr && selectedDate >= shiftDateStr) return cRm;
+                                return pRm;
+                              }
+                              return cRm;
+                            }).filter(Boolean);
+
+                            if (dailyRooms.length === 1) {
+                              return <span className="whitespace-nowrap">Room {dailyRooms[0]}</span>;
+                            }
+
+                            return (
+                              <div className="flex flex-col gap-0.5 text-xs font-bold leading-tight">
+                                {dailyRooms.map((r, gIdx) => (
+                                  <div key={gIdx} className="whitespace-nowrap inline-flex items-center">
+                                    {gIdx === 0 ? <span>Room&nbsp;</span> : <span className="opacity-0 select-none">Room&nbsp;</span>}
+                                    <span className="text-[#1A2E05] font-bold">{r}</span>
+                                    {gIdx < dailyRooms.length - 1 && <span className="text-[#1A2E05]">,</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            );
+                          }
+
+                          if (groupItems.length === 1) {
+                            const gb = groupItems[0];
+                            const pRm = cleanRoomNumber(gb.previousRoomNumber);
+                            const cRm = cleanRoomNumber(gb.Room?.roomNumber || gb.roomNumber || gb.roomId || '101');
+                            const isShifted = Boolean(pRm && pRm !== 'N/A' && pRm !== cRm);
+
+                            if (isShifted) {
+                              return (
+                                <span className="whitespace-nowrap inline-flex items-center">
+                                  <span>Room&nbsp;</span>
+                                  <span className="text-orange-600 font-bold">{pRm}</span>
+                                  <span className="text-orange-500 font-extrabold mx-0.5 text-[11px]">→</span>
+                                  <span className="text-[#1A2E05] font-bold">{cRm}</span>
+                                </span>
+                              );
+                            }
+                            return <span className="whitespace-nowrap">{roomStr}</span>;
+                          }
+
+                          return (
+                            <div className="flex flex-col gap-0.5 text-xs font-bold leading-tight">
+                              {groupItems.map((gb, gIdx) => {
+                                const pRm = cleanRoomNumber(gb.previousRoomNumber);
+                                const cRm = cleanRoomNumber(gb.Room?.roomNumber || gb.roomNumber || gb.roomId || '101');
+                                const isShifted = Boolean(pRm && pRm !== 'N/A' && pRm !== cRm);
+                                const isFirst = gIdx === 0;
+                                const hasComma = gIdx < groupItems.length - 1;
+
+                                return (
+                                  <div key={gIdx} className="whitespace-nowrap inline-flex items-center">
+                                    {isFirst ? (
+                                      <span>Room&nbsp;</span>
+                                    ) : (
+                                      <span className="opacity-0 select-none">Room&nbsp;</span>
+                                    )}
+                                    {isShifted ? (
+                                      <span className="inline-flex items-center">
+                                        <span className="text-orange-600 font-bold">{pRm}</span>
+                                        <span className="text-orange-500 font-extrabold mx-0.5 text-[11px]">→</span>
+                                        <span className="text-[#1A2E05] font-bold">{cRm}</span>
+                                      </span>
+                                    ) : (
+                                      <span className="text-[#1A2E05] font-bold">{cRm}</span>
+                                    )}
+                                    {hasComma && <span className="text-[#1A2E05]">,</span>}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
+                      </td>
+                      <td className="px-4 py-2 text-right font-medium whitespace-nowrap">
+                        {(() => {
+                          const breakdown = getRoomRatesBreakdown(b, activeTab, selectedDate);
+                          if (breakdown.length === 1) {
+                            return breakdown[0].rate ? formatCurrency(breakdown[0].rate) : 'N/A';
+                          }
+
+                          return (
+                            <div className="flex flex-col items-end gap-1 text-[11px] leading-tight">
+                              {breakdown.map((item, rIdx) => (
+                                <div key={rIdx} className="flex items-center gap-1">
+                                  <span className={item.isShiftPrev ? "text-orange-600 font-bold" : "text-[#1A2E05] font-bold"}>
+                                    {item.roomNumber} →
+                                  </span>
+                                  <span className={item.isShiftPrev ? "text-orange-700 font-semibold" : "text-[#1A2E05] font-semibold"}>
+                                    {formatCurrency(item.rate)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </td>
                       <td className="px-4 py-2 text-center font-bold whitespace-nowrap">{pFin.stayDays}</td>
                       <td className="px-4 py-2 text-right font-medium whitespace-nowrap">{formatCurrency(pFin.baseAmount)}</td>
+                      <td className="px-4 py-2 text-right font-bold text-orange-600 whitespace-nowrap">{pFin.discount > 0 ? formatCurrency(pFin.discount) : '₹0.00'}</td>
                       <td className="px-4 py-2 text-right font-semibold text-[#5C7A1F] whitespace-nowrap">{formatCurrency(pFin.extraSubTotal)}</td>
                       <td className="px-4 py-2 text-right font-medium whitespace-nowrap">{formatCurrency3(pFin.cgst)}</td>
                       <td className="px-4 py-2 text-right font-medium whitespace-nowrap">{formatCurrency3(pFin.sgst)}</td>
@@ -1171,7 +1821,7 @@ const Report = () => {
                 })
               ) : (
                 <tr>
-                  <td colSpan={13} className="py-8 text-center text-[#4A5E38] font-bold">
+                  <td colSpan={activeHotel?.enableRegistrationNumber === true ? 15 : 14} className="py-8 text-center text-[#4A5E38] font-bold">
                     No transactions found for the selected period.
                   </td>
                 </tr>
@@ -1180,11 +1830,14 @@ const Report = () => {
             {sortedBookings.length > 0 && !loading && (
               <tfoot className="bg-[#F4F6F0] font-black text-[#1A2E05] border-t-2 border-[#DDE5D0] text-xs">
                 <tr>
-                  <td colSpan={6} className="px-4 py-2.5 uppercase tracking-wider text-[11px] font-black text-[#1A2E05]">
+                  <td colSpan={activeHotel?.enableRegistrationNumber === true ? 7 : 6} className="px-4 py-2.5 uppercase tracking-wider text-[11px] font-black text-[#1A2E05]">
                     Total ({sortedBookings.length} {sortedBookings.length === 1 ? 'Record' : 'Records'})
                   </td>
                   <td className="px-4 py-2.5 text-right font-black text-[#1A2E05]">
                     {formatCurrency(tableTotals.baseAmount)}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-black text-orange-600">
+                    {formatCurrency(tableTotals.discount)}
                   </td>
                   <td className="px-4 py-2.5 text-right font-black text-[#5C7A1F]">
                     {formatCurrency(tableTotals.extraServices)}

@@ -268,6 +268,8 @@ const getRoomShiftBreakdown = (guest) => {
       days = curDays;
     }
 
+    const sameDayOptList = String(guest.sameDayChargeOption || 'no_charge').split(/→|->|,|>/).map(s => s.trim());
+    const stepSameDayOpt = sameDayOptList[idx] || sameDayOptList[0] || 'no_charge';
     const isSameDayShift = days === 0 || (startParts.dateStr === endParts.dateStr && startParts.timeStr === endParts.timeStr);
 
     let rate = 0;
@@ -275,11 +277,14 @@ const getRoomShiftBreakdown = (guest) => {
 
     if (isSameDayShift) {
       days = 0;
-      rate = 0;
-      total = 0;
+      const pRate = prevRatesList[idx] !== undefined && !isNaN(prevRatesList[idx]) ? prevRatesList[idx] : defaultPrevRate;
+      rate = pRate;
+      const hasShiftDayCharge = (stepSameDayOpt === 'charge_previous');
+      total = hasShiftDayCharge ? pRate : 0;
     } else if (!isCurrent) {
       rate = prevRatesList[idx] !== undefined && !isNaN(prevRatesList[idx]) ? prevRatesList[idx] : defaultPrevRate;
-      total = days * rate;
+      const shiftDayExtra = (stepSameDayOpt === 'charge_previous') ? rate : 0;
+      total = (days * rate) + shiftDayExtra;
     }
 
     shiftItems.push({
@@ -920,15 +925,23 @@ const GuestHistory = () => {
                     </td>
                     {activeHotel?.enableRegistrationNumber === true && (
                       <td className="px-4 py-2 whitespace-nowrap">
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-[#EEF4E3] border border-[#D3E2BD] font-mono text-[#1A2E05] whitespace-nowrap">
-                          {item.registrationNumber || getAutoRegNo(item, history)}
-                        </span>
+                        {item.status === 'Cancelled' ? (
+                          <span className="text-xs text-gray-400 font-bold">-</span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-[#EEF4E3] border border-[#D3E2BD] font-mono text-[#1A2E05] whitespace-nowrap">
+                            {item.registrationNumber || getAutoRegNo(item, history)}
+                          </span>
+                        )}
                       </td>
                     )}
                     <td className="px-4 py-2">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-[#F5F7F0] border border-[#DDE5D0] font-mono text-[#1A2E05]">
-                        {formatInvoiceNumber(item.invoiceNumber, activeHotel)}
-                      </span>
+                      {item.status === 'Cancelled' ? (
+                        <span className="text-xs text-gray-400 font-bold">-</span>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold bg-[#F5F7F0] border border-[#DDE5D0] font-mono text-[#1A2E05]">
+                          {formatInvoiceNumber(item.invoiceNumber, activeHotel)}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-2">
                       <div className="flex flex-col">
@@ -1030,10 +1043,12 @@ const GuestHistory = () => {
                     <div>
                       <h4 className="text-sm font-black text-[#1A2E05]">{item.guestName}</h4>
                       <p className="text-xs font-bold text-[#7A8A6A]">{item.phone}</p>
-                      {activeHotel?.enableRegistrationNumber === true && (
+                      {activeHotel?.enableRegistrationNumber === true && item.status !== 'Cancelled' && (
                         <p className="text-[10px] font-bold text-[#2C4012] bg-[#EEF4E3] px-1.5 py-0.5 rounded border border-[#D3E2BD] inline-block mt-0.5">Reg: {item.registrationNumber || getAutoRegNo(item, history)}</p>
                       )}
-                      <p className="text-[10px] font-mono text-[#7A8A6A] mt-0.5">Bill: {formatInvoiceNumber(item.invoiceNumber, activeHotel)}</p>
+                      {item.status !== 'Cancelled' && (
+                        <p className="text-[10px] font-mono text-[#7A8A6A] mt-0.5">Bill: {formatInvoiceNumber(item.invoiceNumber, activeHotel)}</p>
+                      )}
                       <p className="text-[10px] font-bold text-[#4A5E38] mt-0.5">
                         Rooms: {item.roomNumbers && item.roomNumbers.length > 0 ? item.roomNumbers.join(', ') : cleanRoomNumber(item.Room?.roomNumber || item.roomId || '')}
                         {hasRoomType && item.roomTypes ? ` (${[...new Set(item.roomTypes)].join(', ')})` : ''}
@@ -1740,12 +1755,16 @@ const GuestHistory = () => {
                       {activeHotel?.enableRegistrationNumber === true && (
                         <div className="bg-[#F9FAFA] rounded-2xl p-3 border border-[#DDE5D0]/50 text-center">
                           <span className="text-[10px] font-bold text-[#5C7A1F] block mb-0.5">Reg. No.</span>
-                          <span className="text-xs font-bold text-[#1C2B12]">{selectedGuest.registrationNumber || getAutoRegNo(selectedGuest, history)}</span>
+                          <span className="text-xs font-bold text-[#1C2B12]">
+                            {selectedGuest.status === 'Cancelled' ? '-' : (selectedGuest.registrationNumber || getAutoRegNo(selectedGuest, history))}
+                          </span>
                         </div>
                       )}
                       <div className="bg-[#F9FAFA] rounded-2xl p-3 border border-[#DDE5D0]/50 text-center">
                         <span className="text-[10px] font-bold text-[#5C7A1F] block mb-0.5">Invoice No.</span>
-                        <span className="text-xs font-bold text-[#1C2B12]">{formatInvoiceNumber(selectedGuest.invoiceNumber, activeHotel)}</span>
+                        <span className="text-xs font-bold text-[#1C2B12]">
+                          {selectedGuest.status === 'Cancelled' ? '-' : formatInvoiceNumber(selectedGuest.invoiceNumber, activeHotel)}
+                        </span>
                       </div>
                     </div>
 

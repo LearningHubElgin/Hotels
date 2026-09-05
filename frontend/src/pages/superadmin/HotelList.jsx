@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Building, Phone, Mail, MapPin, Eye, Edit, Plus, ArrowRight, Loader2, AlertCircle, X, Users, Calendar, FileText, ShieldCheck } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { encodeId } from '../../utils/hashids';
 
 const HotelList = () => {
   const navigate = useNavigate();
@@ -130,7 +131,7 @@ const HotelList = () => {
 
                     <div className="flex items-center gap-1">
                       <button
-                        onClick={() => navigate(`/superadmin/hotels/edit/${h.id}`)}
+                        onClick={() => navigate(`/superadmin/hotels/edit/${encodeId(h.id)}`)}
                         title="Edit Hotel Profile"
                         className="p-2 hover:bg-[#F0F3E8] rounded-xl text-[#7A8A6A] hover:text-[#84A63C] transition-colors"
                       >

@@ -1,4 +1,5 @@
 import React from 'react';
+import { useAuth } from '../context/AuthContext';
 
 const GstCalculator = ({
   gstOption,
@@ -27,15 +28,17 @@ const GstCalculator = ({
   discount = 0,
   discountReason = ''
 }) => {
+  const { activeHotel } = useAuth();
+  const hasRoomType = activeHotel?.hasRoomType !== false;
   return (
     <div className={className}>
       <div className="flex items-center justify-between border-b border-[#DDE5D0]/40 pb-1.5">
-        <span className="text-xs font-bold text-[#1A2E05]">GST Calculator & Summary</span>
+        <span className="text-sm font-bold text-[#1A2E05]">GST Calculator & Summary</span>
       </div>
 
       {/* GST Option Section */}
       <div className="space-y-1.5">
-        <label className="text-[11px] font-black text-[#1A2E05] block uppercase tracking-wider">GST Option</label>
+        <label className="text-xs font-black text-[#1A2E05] block uppercase tracking-wider">GST Option</label>
         <div className="flex gap-2">
           {[
             { value: 'none', label: 'No GST' },
@@ -49,7 +52,7 @@ const GstCalculator = ({
                 type="button"
                 disabled={disabled}
                 onClick={() => handleGstOptionChange(opt.value)}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold transition-all bg-white flex-1 justify-center ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'} ${isActive
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs sm:text-sm font-bold transition-all bg-white flex-1 justify-center ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'} ${isActive
                   ? 'border-[#84A63C] text-[#5C7A1F] bg-[#84A63C]/5 ring-1 ring-[#84A63C] shadow-sm'
                   : 'border-[#DDE5D0] text-[#7A8A6A] hover:bg-[#F5F7F0]'
                   }`}
@@ -66,7 +69,7 @@ const GstCalculator = ({
 
       {/* GST Rate (%) Section */}
       <div className="space-y-1.5">
-        <label className="text-[11px] font-black text-[#1A2E05] block uppercase tracking-wider">GST Rate (%)</label>
+        <label className="text-xs font-black text-[#1A2E05] block uppercase tracking-wider">GST Rate (%)</label>
         <div className="flex flex-wrap items-center gap-2">
           {[5, 12, 18, 28].map(rate => {
             const isSelected = gstOption !== 'none' && Number(gstRate) === rate && !isCustomGst;
@@ -79,7 +82,7 @@ const GstCalculator = ({
                   setIsCustomGst(false);
                   handleGstRateChange(rate);
                 }}
-                className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all border ${disabled || gstOption === 'none'
+                className={`px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-bold transition-all border ${disabled || gstOption === 'none'
                   ? 'opacity-40 cursor-not-allowed border-[#DDE5D0] text-[#7A8A6A] bg-white/40'
                   : isSelected
                     ? 'bg-[#84A63C] border-[#84A63C] text-white shadow-sm'
@@ -99,7 +102,7 @@ const GstCalculator = ({
               onClick={() => {
                 setIsCustomGst(true);
               }}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all border ${disabled || gstOption === 'none'
+              className={`px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-bold transition-all border ${disabled || gstOption === 'none'
                 ? 'opacity-40 cursor-not-allowed border-[#DDE5D0] bg-white/40'
                 : isCustomGst
                   ? 'bg-[#84A63C] border-[#84A63C] text-white shadow-sm'
@@ -118,10 +121,10 @@ const GstCalculator = ({
                   disabled={disabled}
                   value={gstRate}
                   onChange={(e) => handleGstRateChange(e.target.value)}
-                  className="w-14 px-2 py-1 bg-white border border-[#DDE5D0] focus:border-[#84A63C] focus:outline-none rounded-lg text-xs font-bold text-center disabled:bg-gray-50 disabled:text-gray-400"
+                  className="w-14 px-2 py-1 bg-white border border-[#DDE5D0] focus:border-[#84A63C] focus:outline-none rounded-lg text-xs sm:text-sm font-bold text-center disabled:bg-gray-50 disabled:text-gray-400"
                   placeholder="%"
                 />
-                <span className="text-xs font-bold text-[#4A5E38]">%</span>
+                <span className="text-xs sm:text-sm font-bold text-[#4A5E38]">%</span>
               </div>
             )}
           </div>
@@ -129,19 +132,89 @@ const GstCalculator = ({
       </div>
 
       {/* Calculations Box */}
-      <div className="bg-[#84A63C]/5 border border-[#84A63C]/10 rounded-xl p-3.5 space-y-2">
+      <div className="bg-[#84A63C]/5 border border-[#84A63C]/10 rounded-xl p-3.5 space-y-2.5">
         {roomCalculationDetails && roomCalculationDetails.length > 0 && (
-          <div className="border-b border-[#DDE5D0]/60 pb-2 mb-2 space-y-1.5 text-left">
+          <div className="border-b border-[#DDE5D0]/60 pb-2 mb-2 space-y-2 text-left">
             {roomCalculationDetails.map((room, idx) => {
+              const formatDMY = (dStr) => {
+                if (!dStr) return '';
+                let s = String(dStr).trim();
+                if (s.includes('T')) s = s.split('T')[0];
+                if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+                  return s.split('-').reverse().join('-');
+                }
+                return s;
+              };
+              const inFormatted = formatDMY(room.checkInDate);
+              const outFormatted = formatDMY(room.checkOutDate);
+              const dateRangeStr = inFormatted && outFormatted && inFormatted !== outFormatted ? `${inFormatted} to ${outFormatted}` : inFormatted;
+
+              if (room.isShiftDayCharge) {
+                const cleanRm = String(room.roomNumber || '')
+                  .replace(/\s*\((?:Shift Day Charge|Prev|Previous)\)/gi, '')
+                  .replace(/\s*\((?!Prev\b)[^)]*\)/gi, '')
+                  .trim();
+                return (
+                  <div key={idx} className="flex justify-between items-center text-xs text-[#7A8A6A] flex-wrap gap-1">
+                    <div className="flex flex-col">
+                      <span className="font-bold text-amber-900 inline-flex items-center gap-1.5">
+                        Room {cleanRm}:
+                        <span className="text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded">
+                          Shift Day Charge
+                        </span>
+                      </span>
+                      {inFormatted && (
+                        <span className="text-[10px] text-amber-700 font-bold">
+                          Shift Date: {inFormatted}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 font-extrabold text-[#1A2E05] text-xs sm:text-sm">
+                      <span>₹</span>
+                      {onRoomRateChange && !disabled ? (
+                        <input
+                          type="number"
+                          value={room.rate}
+                          min="0"
+                          step="any"
+                          onChange={(e) => onRoomRateChange(room.roomId, e.target.value)}
+                          onWheel={(e) => e.target.blur()}
+                          className="w-20 px-1.5 py-0.5 bg-white border border-[#DDE5D0] rounded focus:outline-none focus:border-[#84A63C] text-xs font-bold text-center text-[#1A2E05] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        />
+                      ) : (
+                        <span>{room.rate.toLocaleString()}</span>
+                      )}
+                      <span className="text-[#7A8A6A] font-normal ml-1 text-xs">
+                        × 1 Day =
+                      </span>
+                      <span className="ml-1 text-[#1A2E05] font-black">
+                        ₹{room.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  </div>
+                );
+              }
+
+              const displayRoomNum = String(room.roomNumber || '')
+                .replace(/\s*\((?!Prev\b)[^)]*\)/gi, '')
+                .trim();
+
               if (room.isShiftedPrevious && room.days === 0) {
                 return (
-                  <div key={idx} className="flex justify-between items-center text-[10px] text-[#7A8A6A]">
-                    <span className="font-semibold text-[#4A5E38]">
-                      Room {room.roomNumber} ({room.type || 'Deluxe'}):
-                    </span>
+                  <div key={idx} className="flex justify-between items-center text-xs text-[#7A8A6A] flex-wrap gap-1">
+                    <div className="flex flex-col">
+                      <span className="font-bold text-[#4A5E38]">
+                        Room {displayRoomNum}:
+                      </span>
+                      {dateRangeStr && (
+                        <span className="text-[10px] text-[#5C7A1F] font-bold">
+                          {dateRangeStr}
+                        </span>
+                      )}
+                    </div>
                     <div className="flex items-center gap-1 font-bold text-gray-500">
-                      <span className="text-[9px] bg-amber-50 text-amber-700 px-1.5 py-0.2 rounded border border-amber-200">Same-Day Shift</span>
-                      <span className="ml-1 font-extrabold text-[#1A2E05]">
+                      <span className="text-[10px] bg-amber-50 text-amber-700 px-1.5 py-0.2 rounded border border-amber-200">Same-Day Shift</span>
+                      <span className="ml-1 font-extrabold text-[#1A2E05] text-xs sm:text-sm">
                         {Number(room.total || 0) > 0
                           ? `₹${Number(room.total).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                           : '₹0.00 (No Charge)'}
@@ -152,23 +225,23 @@ const GstCalculator = ({
               }
 
               return (
-                <div key={idx} className="flex justify-between items-center text-[10px] text-[#7A8A6A] flex-wrap gap-1">
+                <div key={idx} className="flex justify-between items-center text-xs text-[#7A8A6A] flex-wrap gap-1">
                   <div className="flex flex-col">
-                    <span className="font-semibold text-[#4A5E38] inline-flex items-center gap-1">
-                      Room {room.roomNumber} ({room.type || 'Deluxe'}):
+                    <span className="font-bold text-[#4A5E38] inline-flex items-center gap-1">
+                      Room {displayRoomNum}:
                       {room.status === 'Completed' && (
-                        <span className="text-[8px] font-bold bg-amber-100 text-amber-800 border border-amber-300 px-1 py-0.2 rounded">
+                        <span className="text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-300 px-1 py-0.2 rounded">
                           Checked Out
                         </span>
                       )}
                     </span>
-                    {room.checkInDate && room.checkOutDate && (
-                      <span className="text-[9px] text-[#5C7A1F] font-bold">
-                        {room.checkInDate.split('T')[0].split('-').reverse().join('-')} to {room.checkOutDate.split('T')[0].split('-').reverse().join('-')}
+                    {dateRangeStr && (
+                      <span className="text-[10px] text-[#5C7A1F] font-bold">
+                        {dateRangeStr}
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-1 font-extrabold text-[#1A2E05]">
+                  <div className="flex items-center gap-1 font-extrabold text-[#1A2E05] text-xs sm:text-sm">
                     <span>₹</span>
                     {onRoomRateChange && !disabled ? (
                       <input
@@ -178,15 +251,15 @@ const GstCalculator = ({
                         step="any"
                         onChange={(e) => onRoomRateChange(room.roomId, e.target.value)}
                         onWheel={(e) => e.target.blur()}
-                        className="w-20 px-1 py-0.5 bg-white border border-[#DDE5D0] rounded focus:outline-none focus:border-[#84A63C] text-[10px] font-bold text-center text-[#1A2E05] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        className="w-20 px-1.5 py-0.5 bg-white border border-[#DDE5D0] rounded focus:outline-none focus:border-[#84A63C] text-xs font-bold text-center text-[#1A2E05] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                       />
                     ) : (
                       <span>{room.rate.toLocaleString()}</span>
                     )}
-                    <span className="text-[#7A8A6A] font-normal ml-1">
+                    <span className="text-[#7A8A6A] font-normal ml-1 text-xs">
                       × {room.days} {room.days === 1 ? 'Day' : 'Days'} =
                     </span>
-                    <span className="ml-1 text-[#1A2E05]">
+                    <span className="ml-1 text-[#1A2E05] font-black">
                       ₹{room.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
@@ -194,8 +267,8 @@ const GstCalculator = ({
               );
             })}
             {chargePreviousDay && Number(earlyCheckInCharge) > 0 && (
-              <div className="flex justify-between items-center text-[10px] text-[#7A8A6A] border-t border-dashed border-[#DDE5D0]/40 pt-1.5 mt-1.5">
-                <span className="font-semibold text-amber-800">
+              <div className="flex justify-between items-center text-xs text-[#7A8A6A] border-t border-dashed border-[#DDE5D0]/40 pt-1.5 mt-1.5">
+                <span className="font-bold text-amber-800">
                   Early Check-in Charge:
                 </span>
                 <div className="flex items-center gap-1 font-extrabold text-[#1A2E05]">
@@ -208,7 +281,7 @@ const GstCalculator = ({
                       step="any"
                       onChange={(e) => onEarlyCheckInChargeChange(e.target.value === '' ? '' : (parseFloat(e.target.value) || 0))}
                       onWheel={(e) => e.target.blur()}
-                      className="w-20 px-1 py-0.5 bg-white border border-[#DDE5D0] rounded focus:outline-none focus:border-[#84A63C] text-[10px] font-bold text-center text-[#1A2E05] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      className="w-20 px-1.5 py-0.5 bg-white border border-[#DDE5D0] rounded focus:outline-none focus:border-[#84A63C] text-xs font-bold text-center text-[#1A2E05] [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     />
                   ) : (
                     <span>{earlyCheckInCharge.toLocaleString()}</span>
@@ -220,41 +293,41 @@ const GstCalculator = ({
         )}
         {Number(discount) > 0 ? (
           <>
-            <div className="flex justify-between items-center text-xs">
-              <span className="font-black text-[#2D3E1E]">Base Amount:</span>
-              <span className="font-black text-[#1A2E05]">₹{(subTotal + Number(discount)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            <div className="flex justify-between items-center text-xs sm:text-sm">
+              <span className="font-black text-[#2D3E1E]">Total Room Charges:</span>
+              <span className="font-black text-[#1A2E05]">₹{(gstOption === 'inclusive' && gstRate > 0 ? ((subTotal + (gstAmount || 0)) + Number(discount)) : (subTotal + Number(discount))).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
-            <div className="flex justify-between items-center text-xs text-rose-800">
+            <div className="flex justify-between items-center text-xs sm:text-sm text-rose-800">
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="font-black">Discount:</span>
-                {discountReason && <span className="text-[9.5px] font-bold text-rose-700 bg-rose-50 px-1 py-0.2 rounded border border-rose-200">({discountReason})</span>}
+                {discountReason && <span className="text-[10px] font-bold text-rose-700 bg-rose-50 px-1.5 py-0.2 rounded border border-rose-200">({discountReason})</span>}
               </div>
               <span className="font-black">- ₹{Number(discount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
-            <div className="flex justify-between items-center text-xs border-t border-dashed border-[#DDE5D0]/60 pt-1">
-              <span className="font-black text-[#1A2E05]">Net Base Amount:</span>
+            <div className="flex justify-between items-center text-xs sm:text-sm border-t border-dashed border-[#DDE5D0]/60 pt-1">
+              <span className="font-black text-[#1A2E05]">Taxable Amount:</span>
               <span className="font-black text-[#1A2E05]">₹{subTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
             </div>
           </>
         ) : (
-          <div className="flex justify-between items-center text-xs">
-            <span className="font-black text-[#2D3E1E]">Base Amount:</span>
+          <div className="flex justify-between items-center text-xs sm:text-sm">
+            <span className="font-black text-[#2D3E1E]">Taxable Amount:</span>
             <span className="font-black text-[#1A2E05]">₹{subTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
           </div>
         )}
-        <div className="flex justify-between items-center text-xs">
+        <div className="flex justify-between items-center text-xs sm:text-sm">
           <span className="font-black text-[#2D3E1E]">GST ({gstOption === 'none' ? '0' : gstRate}%):</span>
           <span className="font-black text-[#456113]">₹{gstAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
         </div>
         {extraCharges > 0 && (
-          <div className="flex justify-between items-center text-xs">
+          <div className="flex justify-between items-center text-xs sm:text-sm">
             <span className="font-black text-[#2D3E1E]">Service Orders / Extras:</span>
             <span className="font-black text-amber-800">₹{extraCharges.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
           </div>
         )}
-        <div className="border-t border-[#C8D6B0] pt-2 flex justify-between items-center text-xs">
+        <div className="border-t border-[#C8D6B0] pt-2 flex justify-between items-center text-sm">
           <span className="font-black text-[#1A2E05]">Total Amount:</span>
-          <span className="font-black text-[#1A2E05] text-sm">₹{grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+          <span className="font-black text-[#1A2E05] text-base sm:text-lg">₹{grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
         </div>
       </div>
 
@@ -262,7 +335,7 @@ const GstCalculator = ({
       {showCorporateDetails && gstOption !== 'none' && (
         <div className="border-t border-[#DDE5D0]/40 pt-3.5 space-y-3 animate-fade-in text-left">
           <div className="space-y-1.5">
-            <label className="text-[11px] font-black text-[#4A5E38] block tracking-wider uppercase">Customer GST Number</label>
+            <label className="text-xs font-black text-[#4A5E38] block tracking-wider uppercase">Customer GST Number</label>
             <input
               type="text"
               name="guestGst"
@@ -277,7 +350,7 @@ const GstCalculator = ({
 
           <div className="grid grid-cols-2 gap-2.5">
             <div className="space-y-1.5">
-              <label className="text-[11px] font-black text-[#4A5E38] block uppercase tracking-wider">Company Name</label>
+              <label className="text-xs font-black text-[#4A5E38] block uppercase tracking-wider">Company Name</label>
               <input
                 type="text"
                 name="companyName"
@@ -290,7 +363,7 @@ const GstCalculator = ({
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-[11px] font-black text-[#4A5E38] block tracking-wider uppercase">Company Address</label>
+              <label className="text-xs font-black text-[#4A5E38] block tracking-wider uppercase">Company Address</label>
               <input
                 type="text"
                 name="companyAddress"

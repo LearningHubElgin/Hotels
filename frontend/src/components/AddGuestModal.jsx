@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Users, User, Calendar, CreditCard, X, CheckCircle2, ChevronRight, Mail, Phone, Globe, Loader2, Camera, Upload, Trash2, Edit2, FileText,
-  Maximize2, Minimize2, Bookmark, Tag, AlertTriangle, Eye, Download
+  Maximize2, Minimize2, Bookmark, Tag, AlertTriangle, Eye, Download, Receipt
 } from 'lucide-react';
 import api, { getUploadUrl } from '../services/api';
 import WebcamCapture from './WebcamCapture';
@@ -11,6 +11,17 @@ import { compressImage } from '../utils/imageCompressor';
 import { cleanRoomNumber } from '../utils/roomHelper';
 import { useAuth } from '../context/AuthContext';
 import GstCalculator from './GstCalculator';
+import RoomStaySchedule from './RoomStaySchedule';
+
+const hasValidShift = (rm) => {
+  if (!rm) return false;
+  const str = String(rm).trim().toLowerCase();
+  if (str === '' || str === 'null' || str === 'undefined' || str === 'n/a' || str === 'na' || str === 'none') {
+    return false;
+  }
+  const c = cleanRoomNumber(rm, '');
+  return Boolean(c && c !== 'N/A' && c !== 'None' && c !== 'null' && c !== 'undefined');
+};
 
 const convertTo24Hour = (timeStr) => {
   if (!timeStr) return "11:00";
@@ -148,9 +159,20 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
     setFormData(prev => {
       const currentVal = prev[name] || '';
       const timePart = currentVal.includes('T') ? currentVal.split('T')[1] : '12:00';
+      const newVal = `${dateVal}T${timePart}`;
+      let updatedShifts = prev.groupRoomShifts;
+      if (prev.groupRoomShifts && prev.groupRoomShifts.length > 0) {
+        updatedShifts = prev.groupRoomShifts.map((s, idx) => {
+          if (prev.groupRoomShifts.length === 1 || idx === 0 || String(s.roomId) === String(prev.roomId)) {
+            return { ...s, [name]: newVal };
+          }
+          return s;
+        });
+      }
       return {
         ...prev,
-        [name]: `${dateVal}T${timePart}`
+        [name]: newVal,
+        groupRoomShifts: updatedShifts
       };
     });
   };
@@ -160,8 +182,195 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
       const currentVal = prev[name] || '';
       const datePart = currentVal.includes('T') ? currentVal.split('T')[0] : getLocalDateTimeString(new Date()).split('T')[0];
       const newVal = `${datePart}T${timeVal}`;
-      return { ...prev, [name]: newVal };
+      let updatedShifts = prev.groupRoomShifts;
+      if (prev.groupRoomShifts && prev.groupRoomShifts.length > 0) {
+        updatedShifts = prev.groupRoomShifts.map((s, idx) => {
+          if (prev.groupRoomShifts.length === 1 || idx === 0 || String(s.roomId) === String(prev.roomId)) {
+            return { ...s, [name]: newVal };
+          }
+          return s;
+        });
+      }
+      return { 
+        ...prev, 
+        [name]: newVal,
+        groupRoomShifts: updatedShifts
+      };
     });
+  };
+
+  const handleGroupRoomDateChange = (bookingId, field, value) => {
+    let targetRoomId = null;
+    setFormData(prev => {
+      let isPrimary = false;
+      const newShifts = prev.groupRoomShifts?.map((shift, idx) => {
+        const isMatch = (shift.bookingId !== undefined && shift.bookingId !== null && String(shift.bookingId) === String(bookingId)) ||
+                        (shift.roomId !== undefined && shift.roomId !== null && String(shift.roomId) === String(bookingId));
+        if (isMatch) {
+          targetRoomId = shift.roomId;
+          if (idx === 0 || String(shift.roomId) === String(prev.roomId) || (shift.bookingId && String(shift.bookingId) === String(prev.id))) {
+            isPrimary = true;
+          }
+          return { ...shift, [field]: value };
+        }
+        return shift;
+      });
+
+      const updated = { ...prev, groupRoomShifts: newShifts };
+
+      if (field === 'checkOutDate') {
+        const timePart = prev.checkOutDate?.includes('T') ? prev.checkOutDate.split('T')[1] : convertTo24Hour(activeHotel?.checkoutTime);
+        const maxOutDate = newShifts?.reduce((max, s) => {
+          const sOut = s.checkOutDate ? String(s.checkOutDate).split('T')[0] : '';
+          return (!max || (sOut && sOut > max)) ? sOut : max;
+        }, value) || value;
+        updated.checkOutDate = `${maxOutDate}T${timePart}`;
+      } else if (field === 'checkInDate') {
+        const timePart = prev.checkInDate?.includes('T') ? prev.checkInDate.split('T')[1] : '12:00';
+        const minInDate = newShifts?.reduce((min, s) => {
+          const sIn = s.checkInDate ? String(s.checkInDate).split('T')[0] : '';
+          return (!min || (sIn && sIn < min)) ? sIn : min;
+        }, value) || value;
+        updated.checkInDate = `${minInDate}T${timePart}`;
+      } else if (field === 'checkInTime') {
+        updated.checkInTime = value;
+        if (isPrimary || !prev.checkInTime) {
+          const datePart = prev.checkInDate?.includes('T') ? prev.checkInDate.split('T')[0] : getLocalDateTimeString(new Date()).split('T')[0];
+          updated.checkInDate = `${datePart}T${value}`;
+        }
+      } else if (field === 'checkOutTime') {
+        updated.checkOutTime = value;
+        if (isPrimary || !prev.checkOutTime) {
+          const datePart = prev.checkOutDate?.includes('T') ? prev.checkOutDate.split('T')[0] : getLocalDateTimeString(new Date(Date.now() + 86400000)).split('T')[0];
+          updated.checkOutDate = `${datePart}T${value}`;
+        }
+      }
+
+      return updated;
+    });
+
+    if (field === 'pricePerNight' && targetRoomId) {
+      setCustomRates(cr => ({ ...cr, [targetRoomId]: value }));
+    }
+    if (field === 'previousRoomRate' && targetRoomId) {
+      setCustomRates(cr => ({
+        ...cr,
+        [`prev_${targetRoomId}`]: value,
+        [`prev_${targetRoomId}_0`]: value,
+        [`shift_day_${targetRoomId}`]: value
+      }));
+    }
+  };
+
+  const handleGroupRoomShift = (bookingId, newRoomId) => {
+    const selectedRoom = rooms.find(r => Number(r.id) === Number(newRoomId));
+    const newPrice = selectedRoom?.pricePerNight || '';
+    setFormData(prev => {
+      const newShifts = prev.groupRoomShifts?.map(shift => {
+        if (shift.bookingId === bookingId) {
+          return {
+            ...shift,
+            roomId: newRoomId,
+            roomNumber: selectedRoom ? cleanRoomNumber(selectedRoom.roomNumber) : shift.roomNumber,
+            roomType: selectedRoom?.type || shift.roomType,
+            pricePerNight: newPrice || shift.pricePerNight
+          };
+        }
+        return shift;
+      });
+      return { ...prev, groupRoomShifts: newShifts };
+    });
+    if (newRoomId) {
+      setCustomRates(cr => ({ ...cr, [newRoomId]: newPrice }));
+    }
+  };
+
+  const handleSingleRoomShift = (newRoomId) => {
+    const selectedRoom = rooms.find(r => Number(r.id) === Number(newRoomId));
+    const newPrice = selectedRoom?.pricePerNight || '';
+    setFormData(prev => ({
+      ...prev,
+      roomId: newRoomId,
+      roomNumber: selectedRoom ? cleanRoomNumber(selectedRoom.roomNumber) : prev.roomNumber,
+      roomType: selectedRoom?.type || prev.roomType,
+      pricePerNight: newPrice || prev.pricePerNight
+    }));
+    if (newRoomId) {
+      setSelectedRoomIds([Number(newRoomId)]);
+      setCustomRates(cr => ({ ...cr, [newRoomId]: newPrice }));
+    }
+  };
+
+  const handleScheduleDateChange = (field, value) => {
+    setFormData(prev => {
+      const updated = { ...prev, [field]: value };
+      if (field === 'checkInDate') {
+        const timePart = prev.checkInDate?.includes('T') ? prev.checkInDate.split('T')[1] : '12:00';
+        updated.checkInDate = `${value}T${timePart}`;
+      }
+      if (field === 'checkOutDate') {
+        const timePart = prev.checkOutDate?.includes('T') ? prev.checkOutDate.split('T')[1] : convertTo24Hour(activeHotel?.checkoutTime);
+        updated.checkOutDate = `${value}T${timePart}`;
+      }
+      if (field === 'checkInTime') {
+        const datePart = prev.checkInDate?.includes('T') ? prev.checkInDate.split('T')[0] : getLocalDateTimeString(new Date()).split('T')[0];
+        updated.checkInDate = `${datePart}T${value}`;
+      }
+      if (field === 'checkOutTime') {
+        const datePart = prev.checkOutDate?.includes('T') ? prev.checkOutDate.split('T')[0] : getLocalDateTimeString(new Date(Date.now() + 86400000)).split('T')[0];
+        updated.checkOutDate = `${datePart}T${value}`;
+      }
+      if (prev.groupRoomShifts && prev.groupRoomShifts.length > 0) {
+        updated.groupRoomShifts = prev.groupRoomShifts.map(s => ({
+          ...s,
+          [field]: value
+        }));
+      }
+      return updated;
+    });
+
+    if (field === 'pricePerNight') {
+      const primaryRoomId = selectedRoomIds[0] || formData.roomId || initialData?.roomId;
+      if (primaryRoomId) {
+        setCustomRates(cr => ({ ...cr, [primaryRoomId]: value, 0: value }));
+      }
+    }
+    if (field === 'previousRoomRate') {
+      const primaryRoomId = selectedRoomIds[0] || formData.roomId || initialData?.roomId;
+      if (primaryRoomId) {
+        setCustomRates(cr => ({
+          ...cr,
+          [`prev_${primaryRoomId}`]: value,
+          [`prev_${primaryRoomId}_0`]: value,
+          [`shift_day_${primaryRoomId}`]: value
+        }));
+      }
+    }
+  };
+
+  const handleRoomRateChange = (roomId, newRate) => {
+    const primaryRoomId = selectedRoomIds[0] || formData.roomId || initialData?.roomId;
+    setCustomRates(prev => ({
+      ...prev,
+      [roomId]: newRate,
+      ...((roomId === 0 || String(roomId) === '0' || Number(roomId) === Number(primaryRoomId)) ? { [primaryRoomId]: newRate, 0: newRate } : {})
+    }));
+
+    if (String(roomId).startsWith('shift_day_') || String(roomId).startsWith('prev_')) {
+      setFormData(prev => ({ ...prev, previousRoomRate: newRate }));
+    } else {
+      setFormData(prev => {
+        const updated = { ...prev, pricePerNight: newRate };
+        if (prev.groupRoomShifts) {
+          updated.groupRoomShifts = prev.groupRoomShifts.map(s =>
+            Number(s.roomId) === Number(roomId) || String(s.roomId) === String(roomId)
+              ? { ...s, pricePerNight: newRate }
+              : s
+          );
+        }
+        return updated;
+      });
+    }
   };
 
   const [formData, setFormData] = useState({
@@ -480,15 +689,164 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
             companyName: initialData.companyName || '',
             companyAddress: initialData.companyAddress || '',
             discount: 0,
-            discountReason: ''
+            discountReason: '',
+            registrationNumber: ''
           });
 
           if (initialData.selectedRoomId) {
             setSelectedRoomIds([Number(initialData.selectedRoomId)]);
           }
         } else {
+          const isGroupBooking = initialData.groupBookings && initialData.groupBookings.length > 1;
+
+          const sCheckIn = initialData.checkInDate ? initialData.checkInDate.split('T')[0] : '';
+          const sCheckOut = initialData.checkOutDate ? initialData.checkOutDate.split('T')[0] : '';
+          const sTotalDays = Math.max(1, Math.ceil(Math.abs(new Date(sCheckOut) - new Date(sCheckIn)) / (1000 * 60 * 60 * 24))) || 1;
+          const sHasShift = hasValidShift(initialData.previousRoomNumber);
+          const rawSShiftDates = sHasShift ? (initialData.shiftDate ? initialData.shiftDate : (initialData.updatedAt ? initialData.updatedAt.split('T')[0] : '')) : '';
+          const sShiftDatesList = String(rawSShiftDates || '').split(/→|->|,|>/).map(s => {
+            let str = s.trim();
+            if (str.includes('T')) str = str.split('T')[0];
+            if (/^\d{2}-\d{2}-\d{4}$/.test(str)) {
+              const [d, m, y] = str.split('-');
+              str = `${y}-${m}-${d}`;
+            }
+            return str;
+          }).filter(Boolean);
+          const sShiftDate = sShiftDatesList[0] || '';
+          const sLastShiftDate = sShiftDatesList[sShiftDatesList.length - 1] || sShiftDate || sCheckIn;
+
+          const sPrevRooms = String(initialData.previousRoomNumber || '').split(/\s*(?:→|->|─>|&rarr;|[,\->→])\s*/).map(s => cleanRoomNumber(s.trim(), '')).filter(s => hasValidShift(s));
+          const sPrevRateVal = initialData.previousRoomRate !== undefined && initialData.previousRoomRate !== null ? initialData.previousRoomRate : '';
+          const sPrevRatesList = String(sPrevRateVal || '').split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
+
+          let sPrevTotalSum = 0;
+          if (sPrevRooms.length > 0) {
+            sPrevRooms.forEach((pRm, pIdx) => {
+              const isFirst = (pIdx === 0);
+              const stepStartD = isFirst ? sCheckIn : (sShiftDatesList[pIdx - 1] || sShiftDatesList[0] || sCheckIn);
+              const stepEndD = sShiftDatesList[pIdx] || (isFirst ? (sShiftDatesList[0] || sCheckIn) : (sShiftDatesList[pIdx - 1] || sCheckIn));
+              let daysForThisRoom = 0;
+              if (stepEndD && stepStartD && stepEndD > stepStartD) {
+                daysForThisRoom = Math.max(0, Math.ceil(Math.abs(new Date(stepEndD) - new Date(stepStartD)) / (1000 * 60 * 60 * 24)));
+              }
+              const pRate = sPrevRatesList[pIdx] !== undefined ? sPrevRatesList[pIdx] : (sPrevRatesList[0] !== undefined ? sPrevRatesList[0] : 0);
+              sPrevTotalSum += daysForThisRoom * pRate;
+            });
+          }
+          let sCurDays = 0;
+          if (sCheckOut && sLastShiftDate && sCheckOut > sLastShiftDate) {
+            sCurDays = Math.ceil(Math.abs(new Date(sCheckOut) - new Date(sLastShiftDate)) / (1000 * 60 * 60 * 24));
+          }
+          if (isNaN(sCurDays) || sCurDays <= 0) sCurDays = 1;
+
+          const sSameDayOpt = initialData.sameDayChargeOption || 'no_charge';
+          const sShiftDayCharge = sSameDayOpt === 'charge_previous' ? Number(sPrevRatesList[0] || 0) : 0;
+          sPrevTotalSum += sShiftDayCharge;
+
+          let derivedSingleCurPrice = initialData.pricePerNight || '';
+          if (!derivedSingleCurPrice && initialData.totalAmount && Number(initialData.totalAmount) > 0) {
+            if (sHasShift) {
+              const rem = Number(initialData.totalAmount) - sPrevTotalSum;
+              if (rem > 0 && sCurDays > 0) {
+                derivedSingleCurPrice = Math.round((rem / sCurDays) * 100) / 100;
+              }
+            } else if (sTotalDays > 0) {
+              derivedSingleCurPrice = Math.round((Number(initialData.totalAmount) / sTotalDays) * 100) / 100;
+            }
+          }
+          if (!derivedSingleCurPrice) {
+            derivedSingleCurPrice = initialData.Room?.pricePerNight || '';
+          }
+
+          const groupShifts = isGroupBooking ? initialData.groupBookings.map(b => {
+            const bCheckIn = b.checkInDate ? b.checkInDate.split('T')[0] : (initialData.checkInDate ? initialData.checkInDate.split('T')[0] : '');
+            const bCheckOut = b.checkOutDate ? b.checkOutDate.split('T')[0] : (initialData.checkOutDate ? initialData.checkOutDate.split('T')[0] : '');
+            const bDays = Math.max(1, Math.ceil(Math.abs(new Date(bCheckOut) - new Date(bCheckIn)) / (1000 * 60 * 60 * 24))) || 1;
+            const bHasShift = hasValidShift(b.previousRoomNumber);
+            const rawBShiftDates = bHasShift ? (b.shiftDate ? b.shiftDate : (b.updatedAt ? b.updatedAt.split('T')[0] : '')) : '';
+            const bShiftDatesList = String(rawBShiftDates || '').split(/→|->|,|>/).map(s => {
+              let str = s.trim();
+              if (str.includes('T')) str = str.split('T')[0];
+              if (/^\d{2}-\d{2}-\d{4}$/.test(str)) {
+                const [d, m, y] = str.split('-');
+                str = `${y}-${m}-${d}`;
+              }
+              return str;
+            }).filter(Boolean);
+            const bShiftDate = bShiftDatesList[0] || '';
+            const bLastShiftDate = bShiftDatesList[bShiftDatesList.length - 1] || bShiftDate || bCheckIn;
+
+            const bPrevRooms = String(b.previousRoomNumber || '').split(/\s*(?:→|->|─>|&rarr;|[,\->→])\s*/).map(s => cleanRoomNumber(s.trim(), '')).filter(s => hasValidShift(s));
+            const bPrevRateVal = b.previousRoomRate !== undefined && b.previousRoomRate !== null ? b.previousRoomRate : '';
+            const bPrevRatesList = String(bPrevRateVal || '').split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
+
+            let bPrevTotalSum = 0;
+            if (bPrevRooms.length > 0) {
+              bPrevRooms.forEach((pRm, pIdx) => {
+                const isFirst = (pIdx === 0);
+                const stepStartD = isFirst ? bCheckIn : (bShiftDatesList[pIdx - 1] || bShiftDatesList[0] || bCheckIn);
+                const stepEndD = bShiftDatesList[pIdx] || (isFirst ? (bShiftDatesList[0] || bCheckIn) : (bShiftDatesList[pIdx - 1] || bCheckIn));
+                let daysForThisRoom = 0;
+                if (stepEndD && stepStartD && stepEndD > stepStartD) {
+                  daysForThisRoom = Math.max(0, Math.ceil(Math.abs(new Date(stepEndD) - new Date(stepStartD)) / (1000 * 60 * 60 * 24)));
+                }
+                const pRate = bPrevRatesList[pIdx] !== undefined ? bPrevRatesList[pIdx] : (bPrevRatesList[0] !== undefined ? bPrevRatesList[0] : 0);
+                bPrevTotalSum += daysForThisRoom * pRate;
+              });
+            }
+            let bCurDays = 0;
+            if (bCheckOut && bLastShiftDate && bCheckOut > bLastShiftDate) {
+              bCurDays = Math.ceil(Math.abs(new Date(bCheckOut) - new Date(bLastShiftDate)) / (1000 * 60 * 60 * 24));
+            }
+            if (isNaN(bCurDays) || bCurDays <= 0) bCurDays = 1;
+
+            const bSameDayOpt = b.sameDayChargeOption || 'no_charge';
+            const bShiftDayCharge = bSameDayOpt === 'charge_previous' ? Number(bPrevRatesList[0] || 0) : 0;
+            bPrevTotalSum += bShiftDayCharge;
+
+            let derivedGroupCurPrice = b.pricePerNight || '';
+            if (!derivedGroupCurPrice && b.totalAmount && Number(b.totalAmount) > 0) {
+              if (bHasShift) {
+                const rem = Number(b.totalAmount) - bPrevTotalSum;
+                if (rem > 0 && bCurDays > 0) {
+                  derivedGroupCurPrice = Math.round((rem / bCurDays) * 100) / 100;
+                }
+              } else if (bDays > 0) {
+                derivedGroupCurPrice = Math.round((Number(b.totalAmount) / bDays) * 100) / 100;
+              }
+            }
+            if (!derivedGroupCurPrice) {
+              derivedGroupCurPrice = b.Room?.pricePerNight || '';
+            }
+
+            return {
+              bookingId: b.id,
+              roomId: b.roomId || b.Room?.id,
+              originalRoomId: b.roomId || b.Room?.id,
+              roomNumber: cleanRoomNumber(b.Room?.roomNumber || b.roomNumber, ''),
+              roomType: b.Room?.type || b.roomType || 'Standard',
+              pricePerNight: derivedGroupCurPrice,
+              previousRoomNumber: bHasShift ? cleanRoomNumber(b.previousRoomNumber, '') : '',
+              previousRoomType: b.previousRoomType || '',
+              previousRoomRate: bHasShift ? (b.previousRoomRate !== undefined && b.previousRoomRate !== null ? b.previousRoomRate : '') : '',
+              sameDayChargeOption: b.sameDayChargeOption || 'no_charge',
+              checkInDate: bCheckIn,
+              checkOutDate: bCheckOut,
+              checkInTime: b.checkInTime || initialData.checkInTime || '12:00',
+              checkOutTime: b.checkOutTime || initialData.checkOutTime || '11:00',
+              shiftDate: bShiftDate,
+              shiftTime: b.shiftTime || '12:00'
+            };
+          }) : [];
+
+          const pRm = hasValidShift(initialData.previousRoomNumber) ? cleanRoomNumber(initialData.previousRoomNumber, '') : '';
+          const sDate = pRm ? (initialData.shiftDate ? initialData.shiftDate.split('T')[0] : (initialData.updatedAt ? initialData.updatedAt.split('T')[0] : '')) : '';
+          const sTime = initialData.shiftTime || '12:00';
+
           setFormData({
             ...initialData,
+            pricePerNight: derivedSingleCurPrice,
             fatherName: initialData.fatherName || '',
             guestPhoto: initialData.guestPhoto || null,
             idNumber: initialData.idProof || '',
@@ -514,7 +872,14 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
             companyName: initialData.companyName || '',
             companyAddress: initialData.companyAddress || '',
             discount: initialData.discount || (initialData.groupBookings ? initialData.groupBookings.reduce((sum, b) => sum + Number(b.discount || 0), 0) : 0),
-            discountReason: initialData.discountReason || ''
+            discountReason: initialData.discountReason || '',
+            previousRoomNumber: pRm,
+            previousRoomRate: initialData.previousRoomRate !== undefined && initialData.previousRoomRate !== null ? initialData.previousRoomRate : '',
+            previousRoomType: initialData.previousRoomType || '',
+            shiftDate: sDate,
+            shiftTime: sTime,
+            sameDayChargeOption: initialData.sameDayChargeOption || 'no_charge',
+            groupRoomShifts: groupShifts
           });
         }
         setOriginalImages({
@@ -554,33 +919,105 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
           setBookingMode('multiple');
 
           const totalAmount = initialData.groupBookings.reduce((sum, b) => sum + Number(b.totalAmount || 0), 0);
-          const amountPaid = initialData.groupBookings.reduce((sum, b) => sum + Number(b.amountPaid || 0), 0);
+          let amountPaid = initialData.groupBookings.reduce((sum, b) => sum + Number(b.amountPaid || 0), 0);
+          let historyToUse = initialData.paymentHistory;
+          if (!historyToUse && initialData.groupBookings) {
+            const foundWithHistory = initialData.groupBookings.find(b => b.paymentHistory);
+            if (foundWithHistory) historyToUse = foundWithHistory.paymentHistory;
+          }
+          if (historyToUse) {
+            try {
+              const parsedHistory = typeof historyToUse === 'string' ? JSON.parse(historyToUse) : historyToUse;
+              if (Array.isArray(parsedHistory) && parsedHistory.length > 0) {
+                amountPaid = parsedHistory.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+              }
+            } catch (e) { }
+          }
           setFormData(prev => ({ ...prev, totalAmount, amountPaid }));
 
-          // For group bookings, early check-in charge is stored on primary row only
-          // Distribute the subtraction proportionally or just subtract from first room
-            const primaryId = initialData.roomId ? Number(initialData.roomId) : null;
+          const primaryId = initialData.roomId ? Number(initialData.roomId) : null;
           initialData.groupBookings.forEach(b => {
-            if (b.previousRoomNumber) return; // Do not derive old rate for shifted room
+            if (b.previousRoomNumber) {
+              const bCheckIn = b.checkInDate ? b.checkInDate.split('T')[0] : (initialData.checkInDate ? initialData.checkInDate.split('T')[0] : '');
+              const bCheckOut = b.checkOutDate ? b.checkOutDate.split('T')[0] : (initialData.checkOutDate ? initialData.checkOutDate.split('T')[0] : '');
+              const bDays = Math.max(1, Math.ceil(Math.abs(new Date(bCheckOut) - new Date(bCheckIn)) / (1000 * 60 * 60 * 24))) || 1;
+              let bShiftDate = b.shiftDate ? b.shiftDate.split('T')[0] : (b.updatedAt ? b.updatedAt.split('T')[0] : '');
+              let bPrevDays = 0;
+              if (bShiftDate && bShiftDate > bCheckIn) {
+                bPrevDays = Math.min(bDays - 1, Math.ceil(Math.abs(new Date(bShiftDate) - new Date(bCheckIn)) / (1000 * 60 * 60 * 24)));
+              }
+              const bCurDays = Math.max(1, bDays - bPrevDays);
+              const prevRatesList = String(b.previousRoomRate || '').split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
+              const prevRooms = String(b.previousRoomNumber).split(/\s*(?:→|->|─>|&rarr;|[,\->→])\s*/).map(s => cleanRoomNumber(s.trim())).filter(Boolean);
+
+              let prevTotalSum = 0;
+              if (prevRooms.length > 0) {
+                prevRooms.forEach((pRm, pIdx) => {
+                  const daysForThisRoom = pIdx === 0 ? bPrevDays : 0;
+                  const pKey = `prev_${b.roomId}_${pIdx}`;
+                  const pRate = prevRatesList[pIdx] !== undefined ? prevRatesList[pIdx] : (prevRatesList[0] !== undefined ? prevRatesList[0] : 0);
+                  initialCustomRates[pKey] = pRate;
+                  const prevRoomCharge = daysForThisRoom > 0 ? (pRate * daysForThisRoom) : pRate;
+                  prevTotalSum += prevRoomCharge;
+                });
+              }
+
+              let curRate = Number(b.pricePerNight || 0);
+              if (!curRate && b.totalAmount && Number(b.totalAmount) > 0) {
+                const sameDayOpt = b.sameDayChargeOption || 'no_charge';
+                const shiftDayExtra = sameDayOpt === 'charge_previous' ? (prevRatesList[0] || 0) : 0;
+                let totalAmt = Number(b.totalAmount || 0);
+                if (savedGstOption === 'exclusive' && savedGstRate > 0) {
+                  totalAmt = totalAmt / (1 + savedGstRate / 100);
+                }
+                const currentRoomTotal = Math.max(0, totalAmt - prevTotalSum - shiftDayExtra);
+                curRate = bCurDays > 0 ? (currentRoomTotal / bCurDays) : 0;
+              }
+              if (curRate <= 0) {
+                curRate = Number(b.Room?.pricePerNight || 0);
+              }
+              if (curRate <= 0) {
+                const rmObj = rooms.find(r => Number(r.id) === Number(b.roomId));
+                curRate = rmObj?.pricePerNight ? Number(rmObj.pricePerNight) : 0;
+              }
+              if (curRate <= 0) curRate = 800;
+              curRate = Math.round(curRate * 100) / 100;
+              initialCustomRates[b.roomId] = curRate;
+              return;
+            }
+
+            const bPrice = Number(b.pricePerNight || 0);
+            if (bPrice > 0) {
+              initialCustomRates[b.roomId] = bPrice;
+              return;
+            }
+
             const earlyDeduction = (Number(b.id) === Number(initialData.id) || Number(b.roomId) === primaryId) ? savedEarlyCharge : 0;
             let bBase = Number(b.totalAmount || 0) - earlyDeduction;
             if (savedGstOption === 'exclusive' && savedGstRate > 0) {
               bBase = bBase / (1 + savedGstRate / 100);
             }
-            let bRoomDays = initEffectiveDays;
-            if (b.status === 'Completed' && b.checkInDate && b.checkOutDate) {
-              const bStart = new Date(b.checkInDate.split('T')[0]);
-              const bEnd = new Date(b.checkOutDate.split('T')[0]);
-              const daysDiff = Math.max(1, Math.ceil(Math.abs(bEnd - bStart) / (1000 * 60 * 60 * 24)));
-              if (!isNaN(daysDiff)) {
-                bRoomDays = initHasEarlyFullDay ? daysDiff + 1 : daysDiff;
-              }
+
+            const bCheckInStr = b.checkInDate ? b.checkInDate.split('T')[0] : (initialData.checkInDate ? initialData.checkInDate.split('T')[0] : '');
+            const bCheckOutStr = b.checkOutDate ? b.checkOutDate.split('T')[0] : (initialData.checkOutDate ? initialData.checkOutDate.split('T')[0] : '');
+            let bRoomDays = 1;
+            if (bCheckInStr && bCheckOutStr) {
+              bRoomDays = Math.max(1, Math.ceil(Math.abs(new Date(bCheckOutStr) - new Date(bCheckInStr)) / (1000 * 60 * 60 * 24)));
+            } else {
+              bRoomDays = initEffectiveDays;
             }
-            let rate = bBase / bRoomDays;
+            if (initHasEarlyFullDay && (Number(b.id) === Number(initialData.id) || Number(b.roomId) === primaryId)) {
+              bRoomDays += 1;
+            }
+
+            let rate = bRoomDays > 0 ? (bBase / bRoomDays) : bBase;
             if (Math.abs(rate - Math.round(rate)) < 0.02) {
               rate = Math.round(rate);
             } else {
               rate = Math.round(rate * 100) / 100;
+            }
+            if (rate <= 0 && b.Room?.pricePerNight) {
+              rate = Number(b.Room.pricePerNight);
             }
             initialCustomRates[b.roomId] = rate;
           });
@@ -595,28 +1032,32 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
               const cIn = new Date(checkInStr);
               const cOut = new Date(checkOutStr);
               const totalStayDays = Math.max(1, Math.ceil(Math.abs(cOut - cIn) / (1000 * 60 * 60 * 24)));
-              let shiftDateStr = initialData.shiftDate || (initialData.updatedAt ? initialData.updatedAt.split('T')[0] : '');
-              const todayStr = getLocalDateTimeString(new Date()).split('T')[0];
 
-              if (!shiftDateStr || shiftDateStr < checkInStr || shiftDateStr > checkOutStr) {
-                if (todayStr > checkInStr && todayStr <= checkOutStr) shiftDateStr = todayStr;
-                else shiftDateStr = new Date(cIn.getTime() + Math.max(1, Math.floor(totalStayDays / 2)) * 86400000).toISOString().split('T')[0];
-              }
-
-              let prevDays = 0;
-              if (shiftDateStr > checkInStr) {
-                prevDays = Math.min(totalStayDays - 1, Math.ceil(Math.abs(new Date(shiftDateStr) - cIn) / (1000 * 60 * 60 * 24)));
-              }
-              const curDays = Math.max(1, totalStayDays - prevDays);
+              const rawShiftDates = initialData.shiftDate || (initialData.updatedAt ? initialData.updatedAt.split('T')[0] : '');
+              const shiftDatesList = String(rawShiftDates || '').split(/→|->|,|>/).map(s => {
+                let str = s.trim();
+                if (str.includes('T')) str = str.split('T')[0];
+                if (/^\d{2}-\d{2}-\d{4}$/.test(str)) {
+                  const [d, m, y] = str.split('-');
+                  str = `${y}-${m}-${d}`;
+                }
+                return str;
+              }).filter(Boolean);
 
               const prevRatesList = String(initialData.previousRoomRate || '').split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
-              const prevRooms = String(initialData.previousRoomNumber).split(/\s*(?:→|->|─>|&rarr;|[,\->→])\s*/).map(s => cleanRoomNumber(s.trim())).filter(Boolean);
+              const prevRooms = String(initialData.previousRoomNumber).split(/\s*(?:→|->|─>|&rarr;|[,\->→])\s*/).map(s => cleanRoomNumber(s.trim(), '')).filter(s => hasValidShift(s));
 
               let prevTotalSum = 0;
               if (prevRooms.length > 0) {
-                let remainingPrevDays = prevDays;
                 prevRooms.forEach((pRm, pIdx) => {
-                  const daysForThisRoom = pIdx === 0 ? prevDays : 0;
+                  const isFirst = (pIdx === 0);
+                  const stepStartD = isFirst ? checkInStr : (shiftDatesList[pIdx - 1] || shiftDatesList[0] || checkInStr);
+                  const stepEndD = shiftDatesList[pIdx] || (isFirst ? (shiftDatesList[0] || checkInStr) : (shiftDatesList[pIdx - 1] || checkInStr));
+                  let daysForThisRoom = 0;
+                  if (stepEndD && stepStartD && stepEndD > stepStartD) {
+                    daysForThisRoom = Math.max(0, Math.ceil(Math.abs(new Date(stepEndD) - new Date(stepStartD)) / (1000 * 60 * 60 * 24)));
+                  }
+
                   const pKey = `prev_${initialData.roomId}_${pIdx}`;
                   const pRate = prevRatesList[pIdx] !== undefined ? prevRatesList[pIdx] : (prevRatesList[0] !== undefined ? prevRatesList[0] : 0);
                   initialCustomRates[pKey] = pRate;
@@ -625,38 +1066,51 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
                 });
               }
 
-              let totalAmt = Number(initialData.totalAmount || 0) - savedEarlyCharge;
-              if (savedGstOption === 'exclusive' && savedGstRate > 0) {
-                totalAmt = totalAmt / (1 + savedGstRate / 100);
+              const lastShiftDate = shiftDatesList[shiftDatesList.length - 1] || shiftDatesList[0] || checkInStr;
+              let curDays = 0;
+              if (checkOutStr && lastShiftDate && checkOutStr > lastShiftDate) {
+                curDays = Math.ceil(Math.abs(new Date(checkOutStr) - new Date(lastShiftDate)) / (1000 * 60 * 60 * 24));
               }
-              const currentRoomTotal = Math.max(0, totalAmt - prevTotalSum);
-              let curRate = currentRoomTotal / curDays;
+              if (isNaN(curDays) || curDays <= 0) curDays = 1;
+
+              let curRate = Number(initialData.pricePerNight || 0);
+              if (!curRate && initialData.totalAmount && Number(initialData.totalAmount) > 0) {
+                const sameDayOpt = initialData.sameDayChargeOption || 'no_charge';
+                const shiftDayExtra = sameDayOpt === 'charge_previous' ? (prevRatesList[0] || 0) : 0;
+                let totalAmt = Number(initialData.totalAmount || 0) - savedEarlyCharge;
+                if (savedGstOption === 'exclusive' && savedGstRate > 0) {
+                  totalAmt = totalAmt / (1 + savedGstRate / 100);
+                }
+                const currentRoomTotal = Math.max(0, totalAmt - prevTotalSum - shiftDayExtra);
+                curRate = curDays > 0 ? (currentRoomTotal / curDays) : 0;
+              }
+              if (curRate <= 0) {
+                curRate = Number(initialData.Room?.pricePerNight || 0);
+              }
               if (curRate <= 0) {
                 const rmObj = rooms.find(r => Number(r.id) === Number(initialData.roomId));
-                let baseRmPrice = rmObj?.pricePerNight ? Number(rmObj.pricePerNight) : (matchingBooking?.Room?.pricePerNight ? Number(matchingBooking.Room.pricePerNight) : 800);
-                if (savedGstOption === 'inclusive' && savedGstRate > 0) {
-                  baseRmPrice = Math.round((baseRmPrice / (1 + savedGstRate / 100)) * 100) / 100;
-                }
-                curRate = baseRmPrice;
+                curRate = rmObj?.pricePerNight ? Number(rmObj.pricePerNight) : 0;
               }
-              if (Math.abs(curRate - Math.round(curRate)) < 0.02) {
-                curRate = Math.round(curRate);
-              } else {
-                curRate = Math.round(curRate * 100) / 100;
-              }
+              if (curRate <= 0) curRate = 800;
+              curRate = Math.round(curRate * 100) / 100;
               initialCustomRates[initialData.roomId] = curRate;
             } else {
-              let bBase = Number(initialData.totalAmount || 0) - savedEarlyCharge;
-              if (savedGstOption === 'exclusive' && savedGstRate > 0) {
-                bBase = bBase / (1 + savedGstRate / 100);
-              }
-              let rate = bBase / initEffectiveDays;
-              if (Math.abs(rate - Math.round(rate)) < 0.02) {
-                rate = Math.round(rate);
+              const initPrice = Number(initialData.pricePerNight || 0);
+              if (initPrice > 0) {
+                initialCustomRates[initialData.roomId] = initPrice;
               } else {
-                rate = Math.round(rate * 100) / 100;
+                let bBase = Number(initialData.totalAmount || 0) - savedEarlyCharge;
+                if (savedGstOption === 'exclusive' && savedGstRate > 0) {
+                  bBase = bBase / (1 + savedGstRate / 100);
+                }
+                let rate = bBase / initEffectiveDays;
+                if (Math.abs(rate - Math.round(rate)) < 0.02) {
+                  rate = Math.round(rate);
+                } else {
+                  rate = Math.round(rate * 100) / 100;
+                }
+                initialCustomRates[initialData.roomId] = rate;
               }
-              initialCustomRates[initialData.roomId] = rate;
             }
           }
         }
@@ -698,7 +1152,8 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
           purposeOfVisit: '',
           paymentMode: 'Cash',
           paymentBank: '',
-          discountReason: ''
+          discountReason: '',
+          registrationNumber: ''
         });
         setExtraGuests([]);
         setSelectedRoomIds(preSelectedRoomId ? [Number(preSelectedRoomId)] : []);
@@ -712,6 +1167,29 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
       }
     }
   }, [isOpen, initialData, preSelectedRoomId]);
+
+  useEffect(() => {
+    if (isOpen && activeHotel?.enableRegistrationNumber) {
+      if (initialData && !initialData.isRepeatCheckIn) {
+        if (initialData.registrationNumber) {
+          setFormData(prev => ({ ...prev, registrationNumber: initialData.registrationNumber }));
+        }
+      } else {
+        api.get('/bookings/next-reg-no')
+          .then(res => {
+            if (res.data?.nextRegNo) {
+              setFormData(prev => {
+                if (!prev.registrationNumber || prev.registrationNumber === '') {
+                  return { ...prev, registrationNumber: res.data.nextRegNo };
+                }
+                return prev;
+              });
+            }
+          })
+          .catch(err => console.error('Error fetching next registration number:', err));
+      }
+    }
+  }, [isOpen, activeHotel?.enableRegistrationNumber, initialData]);
 
   useEffect(() => {
     if (formData.phone.length === 10 && !initialData) {
@@ -750,14 +1228,17 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
   const roomCalculationDetails = useMemo(() => {
     if (!selectedRoomIds.length || !rooms.length) return [];
 
-    const startStr = formData.checkInDate ? formData.checkInDate.split('T')[0] : '';
-    const endStr = formData.checkOutDate ? formData.checkOutDate.split('T')[0] : '';
+    const startStr = (formData.checkInDate ? formData.checkInDate.split('T')[0] : '') ||
+      (formData.groupRoomShifts?.[0]?.checkInDate ? String(formData.groupRoomShifts[0].checkInDate).split('T')[0] : '') ||
+      (initialData?.checkInDate ? String(initialData.checkInDate).split('T')[0] : '');
+    const endStr = (formData.checkOutDate ? formData.checkOutDate.split('T')[0] : '') ||
+      (formData.groupRoomShifts?.[0]?.checkOutDate ? String(formData.groupRoomShifts[0].checkOutDate).split('T')[0] : '') ||
+      (initialData?.checkOutDate ? String(initialData.checkOutDate).split('T')[0] : '');
     if (!startStr || !endStr) return [];
 
     const start = new Date(startStr);
     const end = new Date(endStr);
     const baseDays = Math.ceil(Math.abs(end - start) / (1000 * 60 * 60 * 24)) || 1;
-    const effectiveDays = (chargePreviousDay && earlyCheckInType === 'full_day') ? baseDays + 1 : baseDays;
 
     const details = [];
     selectedRoomIds.forEach(id => {
@@ -771,77 +1252,202 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
       }
       if (!selectedRoom) return;
 
-      const initialBookingRate = initialData?.totalAmount ? Number(initialData.totalAmount) : 0;
+      const isGroupBooking = (initialData?.groupBookings && initialData.groupBookings.length > 1) || (formData.groupRoomShifts && formData.groupRoomShifts.length > 1);
+      const matchingBooking = isGroupBooking
+        ? initialData?.groupBookings?.find(b => Number(b.roomId) === Number(id) || String(b.Room?.roomNumber) === String(id) || Number(b.id) === Number(id))
+        : (initialData && (Number(initialData.roomId) === Number(id) || Number(initialData.id) === Number(id)) ? initialData : null);
+
+      const shiftObj = formData.groupRoomShifts?.find(s => Number(s.roomId) === Number(id) || Number(s.bookingId) === Number(id) || (matchingBooking && s.bookingId === matchingBooking.id));
+
+      const roomStartStr = (isGroupBooking && selectedRoomIds.length > 1 && shiftObj?.checkInDate ? String(shiftObj.checkInDate).split('T')[0] : '') || startStr;
+      const roomEndStr = (isGroupBooking && selectedRoomIds.length > 1 && shiftObj?.checkOutDate ? String(shiftObj.checkOutDate).split('T')[0] : '') || endStr;
+
+      const rStart = new Date(roomStartStr);
+      const rEnd = new Date(roomEndStr);
+      const rBaseDays = Math.ceil(Math.abs(rEnd - rStart) / (1000 * 60 * 60 * 24)) || 1;
+      const roomEffectiveDays = (chargePreviousDay && earlyCheckInType === 'full_day') ? rBaseDays + 1 : rBaseDays;
+
+      const bookingPrice = Number(shiftObj?.pricePerNight || matchingBooking?.pricePerNight || 0);
+      const initialBookingRate = bookingPrice > 0
+        ? bookingPrice
+        : (matchingBooking?.totalAmount ? Number(matchingBooking.totalAmount) : (initialData?.totalAmount ? Number(initialData.totalAmount) : 0));
+
+      const origStart = matchingBooking?.checkInDate ? new Date(matchingBooking.checkInDate.split('T')[0]) : (initialData?.checkInDate ? new Date(initialData.checkInDate.split('T')[0]) : null);
+      const origEnd = matchingBooking?.checkOutDate ? new Date(matchingBooking.checkOutDate.split('T')[0]) : (initialData?.checkOutDate ? new Date(initialData.checkOutDate.split('T')[0]) : null);
+      const origBookingDays = (origStart && origEnd && !isNaN(origStart) && !isNaN(origEnd)) ? Math.max(1, Math.ceil(Math.abs(origEnd - origStart) / (1000 * 60 * 60 * 24))) : 1;
+
+      const derivedStayRate = bookingPrice > 0
+        ? bookingPrice
+        : ((initialBookingRate > 0 && origBookingDays > 0 && (!initialData?.groupBookings || initialData.groupBookings.length <= 1))
+            ? Math.round((initialBookingRate / origBookingDays) * 100) / 100
+            : (selectedRoom.pricePerNight ? Number(selectedRoom.pricePerNight) : initialBookingRate));
       const rawRateVal = customRates[id] !== undefined
         ? customRates[id]
-        : (selectedRoom.pricePerNight ? Number(selectedRoom.pricePerNight) : initialBookingRate);
+        : (initialData ? derivedStayRate : (selectedRoom.pricePerNight ? Number(selectedRoom.pricePerNight) : initialBookingRate));
       const rate = rawRateVal === '' ? '' : (isNaN(Number(rawRateVal)) ? 0 : Number(rawRateVal));
       const calcRate = Number(rate) || 0;
 
-      // Check if this room booking had a room shift
-      const matchingBooking = initialData?.groupBookings && initialData.groupBookings.length > 1
-        ? initialData.groupBookings.find(b => Number(b.roomId) === Number(id))
-        : (initialData && Number(initialData.roomId) === Number(id) ? initialData : null);
+      const hasShiftInBooking = isGroupBooking
+        ? Boolean((shiftObj && hasValidShift(shiftObj.previousRoomNumber)) || (matchingBooking && hasValidShift(matchingBooking.previousRoomNumber)))
+        : Boolean(hasValidShift(formData.previousRoomNumber) || (shiftObj && hasValidShift(shiftObj.previousRoomNumber)) || (matchingBooking && hasValidShift(matchingBooking.previousRoomNumber)));
 
-      if (matchingBooking && matchingBooking.previousRoomNumber) {
-        let shiftDateStr = matchingBooking.shiftDate || (matchingBooking.updatedAt ? matchingBooking.updatedAt.split('T')[0] : '');
-        const todayYMDStr = getLocalDateTimeString(new Date()).split('T')[0];
+      if (hasShiftInBooking) {
+        const rawPrevRoom = isGroupBooking
+          ? (shiftObj?.previousRoomNumber || matchingBooking?.previousRoomNumber || '')
+          : (shiftObj?.previousRoomNumber || formData.previousRoomNumber || matchingBooking?.previousRoomNumber || '');
+        const prevRooms = hasValidShift(rawPrevRoom)
+          ? String(rawPrevRoom).split(/\s*(?:→|->|─>|&rarr;|[,\->→])\s*/).map(s => cleanRoomNumber(s.trim(), '')).filter(s => hasValidShift(s))
+          : [];
 
-        if (!shiftDateStr || shiftDateStr < startStr || shiftDateStr > endStr) {
-          if (todayYMDStr > startStr && todayYMDStr <= endStr) {
-            shiftDateStr = todayYMDStr;
-          } else {
-            const midDays = Math.max(1, Math.floor(effectiveDays / 2));
-            const midDate = new Date(start.getTime() + midDays * 86400000);
-            shiftDateStr = midDate.toISOString().split('T')[0];
+        const rawShiftDates = shiftObj?.shiftDate !== undefined && shiftObj.shiftDate !== ''
+          ? shiftObj.shiftDate
+          : (isGroupBooking
+              ? (matchingBooking?.shiftDate || matchingBooking?.updatedAt || '')
+              : (formData.shiftDate || matchingBooking?.shiftDate || matchingBooking?.updatedAt || ''));
+
+        const shiftDatesList = String(rawShiftDates || '').split(/→|->|,|>/).map(s => {
+          let str = s.trim();
+          if (str.includes('T')) str = str.split('T')[0];
+          if (/^\d{2}-\d{2}-\d{4}$/.test(str)) {
+            const [d, m, y] = str.split('-');
+            str = `${y}-${m}-${d}`;
           }
-        }
+          return str;
+        }).filter(Boolean);
 
-        let prevDays = 0;
-        if (shiftDateStr > startStr) {
-          prevDays = Math.min(effectiveDays - 1, Math.ceil(Math.abs(new Date(shiftDateStr) - start) / (1000 * 60 * 60 * 24)));
-        }
-        const curDays = Math.max(1, effectiveDays - prevDays);
+        const prevRatesStr = isGroupBooking
+          ? (shiftObj?.previousRoomRate !== undefined && shiftObj.previousRoomRate !== ''
+              ? shiftObj.previousRoomRate
+              : (matchingBooking?.previousRoomRate || ''))
+          : (shiftObj?.previousRoomRate !== undefined && shiftObj.previousRoomRate !== ''
+              ? shiftObj.previousRoomRate
+              : (formData.previousRoomRate !== undefined && formData.previousRoomRate !== ''
+                  ? formData.previousRoomRate
+                  : (matchingBooking?.previousRoomRate || '')));
+        const prevRates = String(prevRatesStr).split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
+        const prevRoomObj = prevRooms.length > 0 ? rooms.find(r => cleanRoomNumber(r.roomNumber, '') === cleanRoomNumber(prevRooms[0], '')) : null;
+        const prevType = shiftObj?.previousRoomType || (!isGroupBooking ? formData.previousRoomType : '') || matchingBooking?.previousRoomType || prevRoomObj?.type || '';
 
-        const prevRoomObj = rooms.find(r => cleanRoomNumber(r.roomNumber) === cleanRoomNumber(matchingBooking.previousRoomNumber) || r.id === matchingBooking.previousRoomId);
-        const prevRates = String(matchingBooking.previousRoomRate || '').split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
-        const prevType = matchingBooking.previousRoomType || prevRoomObj?.type || selectedRoom.type || 'Deluxe';
+        const sameDayOpt = shiftObj
+          ? (shiftObj.sameDayChargeOption || 'no_charge')
+          : (formData.sameDayChargeOption !== undefined ? formData.sameDayChargeOption : (matchingBooking?.sameDayChargeOption || 'no_charge'));
+        const sameDayOptList = String(sameDayOpt || '').split(/→|->|,|>/).map(s => s.trim());
 
-        const prevRooms = String(matchingBooking.previousRoomNumber).split(/\s*(?:→|->|─>|&rarr;|[,\->→])\s*/).map(s => cleanRoomNumber(s.trim())).filter(Boolean);
         if (prevRooms.length > 0) {
           prevRooms.forEach((pRm, pIdx) => {
-            const daysForThisRoom = pIdx === 0 ? prevDays : 0;
+            const isFirst = (pIdx === 0);
+            const isLast = (pIdx === prevRooms.length - 1);
+            const stepSameDayOpt = sameDayOptList[pIdx] || sameDayOptList[0] || 'no_charge';
+            const stepStartD = isFirst ? roomStartStr : (shiftDatesList[pIdx - 1] || shiftDatesList[0] || roomStartStr);
+            const stepEndD = shiftDatesList[pIdx] || (isFirst ? (shiftDatesList[0] || roomStartStr) : (shiftDatesList[pIdx - 1] || roomStartStr));
+
+            let daysForThisRoom = 0;
+            if (stepEndD && stepStartD && stepEndD > stepStartD) {
+              daysForThisRoom = Math.max(0, Math.ceil(Math.abs(new Date(stepEndD) - new Date(stepStartD)) / (1000 * 60 * 60 * 24)));
+            }
+
             const pKey = `prev_${id}_${pIdx}`;
-            const pRoomObj = rooms.find(r => cleanRoomNumber(r.roomNumber) === cleanRoomNumber(pRm));
-            const fallbackP = prevRates[pIdx] !== undefined && !isNaN(prevRates[pIdx]) ? prevRates[pIdx] : (pRoomObj?.pricePerNight ? Number(pRoomObj.pricePerNight) : Number(rate));
+            const pRoomObj = rooms.find(r => cleanRoomNumber(r.roomNumber, '') === cleanRoomNumber(pRm, ''));
+            const fallbackP = prevRates[pIdx] !== undefined && !isNaN(prevRates[pIdx]) ? prevRates[pIdx] : (prevRates[0] !== undefined && !isNaN(prevRates[0]) ? prevRates[0] : (pRoomObj?.pricePerNight ? Number(pRoomObj.pricePerNight) : Number(rate)));
             const rawVal = customRates[pKey] !== undefined
               ? customRates[pKey]
               : (customRates[`prev_${id}`] !== undefined ? customRates[`prev_${id}`] : fallbackP);
             const pRate = rawVal;
             const pNum = Number(rawVal) || 0;
-            const pTotal = daysForThisRoom > 0 ? (pNum * daysForThisRoom) : pNum;
-            details.push({
-              roomId: pKey,
-              roomNumber: `${pRm} (Prev)`,
-              type: pRoomObj?.type || prevType,
-              rate: pRate,
-              days: daysForThisRoom,
-              total: pTotal,
-              isShiftedPrevious: true,
-              isSameDayShift: daysForThisRoom === 0
-            });
+
+            if (daysForThisRoom > 0) {
+              const pTotal = Math.round(pNum * daysForThisRoom * 100) / 100;
+              details.push({
+                roomId: pKey,
+                roomNumber: `${pRm} (Prev)`,
+                type: pRoomObj?.type || prevType,
+                rate: pRate,
+                days: daysForThisRoom,
+                checkInDate: stepStartD,
+                checkOutDate: stepEndD,
+                total: pTotal,
+                isShiftedPrevious: true,
+                isSameDayShift: false
+              });
+
+              if (stepSameDayOpt === 'charge_previous') {
+                const shiftDayKey = prevRooms.length > 1 ? `shift_day_${id}_${pIdx}` : `shift_day_${id}`;
+                const shiftDayRaw = customRates[shiftDayKey] !== undefined ? customRates[shiftDayKey] : pRate;
+                const shiftDayNum = Number(shiftDayRaw) || 0;
+                const shiftDayTotal = Math.round(shiftDayNum * 100) / 100;
+                details.push({
+                  roomId: shiftDayKey,
+                  roomNumber: pRm,
+                  type: pRoomObj?.type || prevType,
+                  rate: shiftDayRaw,
+                  days: 1,
+                  checkInDate: stepEndD,
+                  checkOutDate: stepEndD,
+                  total: shiftDayTotal,
+                  isShiftDayCharge: true,
+                  isShiftedPrevious: true,
+                  hasShiftDayCharge: true,
+                  shiftDate: stepEndD
+                });
+              }
+            } else {
+              if (stepSameDayOpt === 'no_charge') {
+                details.push({
+                  roomId: pKey,
+                  roomNumber: `${pRm} (Prev)`,
+                  type: pRoomObj?.type || prevType,
+                  rate: 0,
+                  days: 0,
+                  checkInDate: stepStartD,
+                  checkOutDate: stepEndD,
+                  total: 0,
+                  isShiftedPrevious: true,
+                  isSameDayShift: true
+                });
+              } else {
+                const shiftDayKey = prevRooms.length > 1 ? `shift_day_${id}_${pIdx}` : `shift_day_${id}`;
+                const shiftDayRaw = customRates[shiftDayKey] !== undefined ? customRates[shiftDayKey] : pRate;
+                const shiftDayNum = Number(shiftDayRaw) || 0;
+                const shiftDayTotal = Math.round(shiftDayNum * 100) / 100;
+                details.push({
+                  roomId: shiftDayKey,
+                  roomNumber: pRm,
+                  type: pRoomObj?.type || prevType,
+                  rate: shiftDayRaw,
+                  days: 1,
+                  checkInDate: stepStartD,
+                  checkOutDate: stepEndD,
+                  total: shiftDayTotal,
+                  isShiftDayCharge: true,
+                  isShiftedPrevious: true,
+                  isSameDayShift: true,
+                  hasShiftDayCharge: true,
+                  shiftDate: stepEndD
+                });
+              }
+            }
           });
         }
 
-        const prevTotalSum = details.filter(d => d.isShiftedPrevious).reduce((s, d) => s + (Number(d.total) || 0), 0);
-        const remBase = (matchingBooking.totalAmount ? Number(matchingBooking.totalAmount) : 0) - prevTotalSum;
-        const fallbackCurRate = (curDays > 0 && remBase > 0)
-          ? (remBase / curDays)
-          : ((selectedRoom.pricePerNight && Number(selectedRoom.pricePerNight) > 0)
-              ? (gstOption === 'inclusive' && gstRate > 0
-                  ? Math.round((Number(selectedRoom.pricePerNight) / (1 + gstRate / 100)) * 100) / 100
-                  : Number(selectedRoom.pricePerNight))
-              : (matchingBooking.Room?.pricePerNight ? Number(matchingBooking.Room.pricePerNight) : Number(rate || 0)));
+        const lastShiftDate = shiftDatesList[shiftDatesList.length - 1] || shiftDatesList[0] || roomStartStr;
+        let curDays = 0;
+        if (roomEndStr && lastShiftDate && roomEndStr > lastShiftDate) {
+          curDays = Math.ceil(Math.abs(new Date(roomEndStr) - new Date(lastShiftDate)) / (1000 * 60 * 60 * 24));
+        }
+        if (isNaN(curDays) || curDays <= 0) {
+          const prevTotalDaysCount = details.filter(d => d.isShiftedPrevious && !d.isShiftDayCharge).reduce((s, d) => s + (Number(d.days) || 0), 0);
+          curDays = Math.max(1, roomEffectiveDays - prevTotalDaysCount);
+        }
+
+        const fallbackCurRate = isGroupBooking
+          ? (shiftObj?.pricePerNight !== undefined && shiftObj?.pricePerNight !== ''
+              ? Number(shiftObj.pricePerNight)
+              : Number(matchingBooking?.pricePerNight || selectedRoom?.pricePerNight || matchingBooking?.Room?.pricePerNight || rate || 0))
+          : ((formData.pricePerNight !== undefined && formData.pricePerNight !== '')
+              ? Number(formData.pricePerNight)
+              : (shiftObj?.pricePerNight !== undefined && shiftObj?.pricePerNight !== ''
+                  ? Number(shiftObj.pricePerNight)
+                  : Number(matchingBooking?.pricePerNight || selectedRoom?.pricePerNight || matchingBooking?.Room?.pricePerNight || rate || 0)));
 
         const curRawVal = customRates[id] !== undefined
           ? customRates[id]
@@ -851,37 +1457,51 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
         const curTotal = curNum * curDays;
         details.push({
           roomId: id,
-          roomNumber: selectedRoom.roomNumber || 'N/A',
+          roomNumber: cleanRoomNumber(selectedRoom.roomNumber || 'N/A').replace(/\s*\((?!Prev\b)[^)]*\)/gi, '').trim(),
           type: selectedRoom.type || '',
           rate: curRate,
           days: curDays,
-          total: curTotal
+          total: curTotal,
+          checkInDate: lastShiftDate,
+          checkOutDate: roomEndStr
         });
       } else {
-        let roomDays = effectiveDays;
-        if (matchingBooking?.status === 'Completed' && matchingBooking.checkInDate && matchingBooking.checkOutDate) {
-          const bStart = new Date(matchingBooking.checkInDate.split('T')[0]);
-          const bEnd = new Date(matchingBooking.checkOutDate.split('T')[0]);
-          const daysDiff = Math.max(1, Math.ceil(Math.abs(bEnd - bStart) / (1000 * 60 * 60 * 24)));
-          if (!isNaN(daysDiff)) {
-            roomDays = (chargePreviousDay && earlyCheckInType === 'full_day') ? daysDiff + 1 : daysDiff;
-          }
-        }
+        const roomDays = roomEffectiveDays;
         const totalBase = calcRate * roomDays;
         details.push({
           roomId: id,
-          roomNumber: selectedRoom.roomNumber || 'N/A',
+          roomNumber: cleanRoomNumber(selectedRoom.roomNumber || 'N/A').replace(/\s*\((?!Prev\b)[^)]*\)/gi, '').trim(),
           type: selectedRoom.type || '',
           rate: rate,
           days: roomDays,
           total: totalBase,
-          status: matchingBooking?.status
+          status: matchingBooking?.status,
+          checkInDate: roomStartStr,
+          checkOutDate: roomEndStr
         });
       }
     });
 
     return details;
-  }, [selectedRoomIds, rooms, formData.checkInDate, formData.checkOutDate, chargePreviousDay, earlyCheckInType, customRates, initialData]);
+  }, [
+    selectedRoomIds,
+    rooms,
+    formData.checkInDate,
+    formData.checkOutDate,
+    formData.sameDayChargeOption,
+    formData.shiftDate,
+    formData.previousRoomNumber,
+    formData.previousRoomRate,
+    formData.previousRoomType,
+    formData.pricePerNight,
+    formData.groupRoomShifts,
+    chargePreviousDay,
+    earlyCheckInType,
+    customRates,
+    initialData,
+    gstOption,
+    gstRate
+  ]);
 
   useEffect(() => {
     if (!selectedRoomIds.length || !rooms.length) return;
@@ -892,40 +1512,11 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
       total += Number(earlyCheckInCharge || 0);
     }
 
-    let isSameAsInitial = false;
-    if (initialData) {
-      const initialStart = initialData.checkInDate?.split('T')[0];
-      const initialEnd = initialData.checkOutDate?.split('T')[0];
-      if (formData.checkInDate === initialStart && formData.checkOutDate === initialEnd) {
-        const initialRoomIds = initialData.groupBookings && initialData.groupBookings.length > 1
-          ? initialData.groupBookings.map(b => Number(b.roomId)).sort().join(',')
-          : [Number(initialData.roomId)].sort().join(',');
-        const currentRoomIds = [...selectedRoomIds].sort().join(',');
-        if (currentRoomIds === initialRoomIds) {
-          const customRatesModified = Object.keys(customRates).some(id => {
-            const currentVal = customRates[id];
-            const matchingInitial = initialData.groupBookings && initialData.groupBookings.length > 1
-              ? initialData.groupBookings.find(b => Number(b.roomId) === Number(id))
-              : (Number(initialData.roomId) === Number(id) ? initialData : null);
-            if (!matchingInitial) return false;
-            const initHasEarlyFullDay = !!(initialData.chargePreviousDay && (initialData.earlyCheckInType === 'full_day' || !initialData.earlyCheckInCharge || Number(initialData.earlyCheckInCharge) === 0));
-            const initDays = Math.ceil(Math.abs(new Date(initialEnd) - new Date(initialStart)) / (1000 * 60 * 60 * 24)) || 1;
-            const initEffectiveDays = initHasEarlyFullDay ? initDays + 1 : initDays;
-            const initialRate = Number(matchingInitial.totalAmount || 0) / initEffectiveDays;
-            return Math.abs(currentVal - initialRate) > 0.0001;
-          });
-
-          if (!customRatesModified && !initialData.previousRoomNumber) {
-            isSameAsInitial = true;
-          }
-        }
-      }
-    }
-
-    if (!isSameAsInitial) {
-      setFormData(prev => ({ ...prev, totalAmount: total }));
-    }
-  }, [roomCalculationDetails, gstOption, gstRate, chargePreviousDay, earlyCheckInCharge, earlyCheckInType, initialData, selectedRoomIds, rooms, formData.checkInDate, formData.checkOutDate, customRates]);
+    setFormData(prev => {
+      if (Number(prev.totalAmount || 0) === Number(total || 0)) return prev;
+      return { ...prev, totalAmount: total };
+    });
+  }, [roomCalculationDetails, gstOption, gstRate, chargePreviousDay, earlyCheckInCharge, earlyCheckInType, selectedRoomIds, rooms]);
 
   const fetchRooms = async () => {
     try {
@@ -1272,7 +1863,7 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
     if (formData.paymentMode === 'Online' && amountPaidVal > 0 && banksList.length > 0 && (!formData.paymentBank || !formData.paymentBank.trim())) {
       return alert('Please select a Bank / Account for Online / UPI payment.');
     }
-    const totalAmountVal = parseFloat(formData.totalAmount) || 0;
+    const totalAmountVal = rawTotalTariff > 0 ? rawTotalTariff : (parseFloat(formData.totalAmount) || 0);
     const numberOfGuestsVal = parseInt(formData.numberOfGuests) || 1;
     const discountVal = parseFloat(formData.discount) || 0;
     const netTotalVal = Math.max(0, totalAmountVal - discountVal);
@@ -1310,23 +1901,35 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
     let finalHistory = [];
     if (initialData && !initialData.isRepeatCheckIn) {
       try {
-        finalHistory = initialData.paymentHistory ? JSON.parse(initialData.paymentHistory) : [];
+        let historyRaw = initialData.paymentHistory;
+        if (!historyRaw && initialData.groupBookings) {
+          const foundWithHistory = initialData.groupBookings.find(b => b.paymentHistory);
+          if (foundWithHistory) historyRaw = foundWithHistory.paymentHistory;
+        }
+        finalHistory = historyRaw ? (typeof historyRaw === 'string' ? JSON.parse(historyRaw) : historyRaw) : [];
+        if (!Array.isArray(finalHistory)) finalHistory = [];
       } catch (e) {
         finalHistory = [];
       }
 
       if (finalHistory.length > 0) {
-        const initialTotalPaid = initialData.groupBookings && initialData.groupBookings.length > 1
-          ? initialData.groupBookings.reduce((sum, b) => sum + Number(b.amountPaid || 0), 0)
-          : Number(initialData.amountPaid || 0);
+        const initialTotalPaid = finalHistory.reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
         if (Math.abs(amountPaidVal - initialTotalPaid) > 0.01) {
-          if (finalHistory[0]) {
+          if (finalHistory.length === 1) {
             finalHistory[0].amount = amountPaidVal;
             finalHistory[0].paymentMode = formData.paymentMode || 'Cash';
             finalHistory[0].paymentBank = formData.paymentMode === 'Online' ? (formData.paymentBank || '') : '';
+          } else if (amountPaidVal > initialTotalPaid) {
+            finalHistory.push({
+              amount: parseFloat((amountPaidVal - initialTotalPaid).toFixed(2)),
+              date: currentDate,
+              time: currentTime,
+              paymentMode: formData.paymentMode || 'Cash',
+              paymentBank: formData.paymentMode === 'Online' ? (formData.paymentBank || '') : '',
+              paidFor: 'Room'
+            });
           }
-          finalHistory = [finalHistory[0]];
         }
       } else if (amountPaidVal > 0) {
         const checkInDateStr = initialData.checkInDate ? initialData.checkInDate.split('T')[0] : '';
@@ -1360,6 +1963,12 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
       finalSubmitStatus = 'Confirmed';
     }
 
+    const primaryShift = (formData.groupRoomShifts && formData.groupRoomShifts.length > 0)
+      ? (formData.groupRoomShifts.find(s => (s.bookingId && initialData?.id && Number(s.bookingId) === Number(initialData.id)) || (s.roomId && Number(s.roomId) === Number(formData.roomId))) || formData.groupRoomShifts[0])
+      : null;
+    const finalCheckInTime = formData.checkInTime || primaryShift?.checkInTime || cInT || '12:00';
+    const finalCheckOutTime = formData.checkOutTime || primaryShift?.checkOutTime || cOutT || convertTo24Hour(activeHotel?.checkoutTime) || '11:00 AM';
+
     setLoading(true);
     await onConfirm({
       ...formData,
@@ -1376,9 +1985,9 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
       bookingDate: bD || cInD || '',
       bookingTime: bT || cInT || '12:00',
       checkInDate: cInD || '',
-      checkInTime: cInT || '12:00',
+      checkInTime: finalCheckInTime,
       checkOutDate: cOutD || '',
-      checkOutTime: cOutT || '23:00',
+      checkOutTime: finalCheckOutTime,
       numberOfGuests: numberOfGuestsVal,
       amountPaid: amountPaidVal,
       totalAmount: totalAmountVal,
@@ -1396,6 +2005,7 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
       selectedRoomIds: selectedRoomIds,
       customRates: customRates,
       roomCalculationDetails: roomCalculationDetails,
+      groupRoomShifts: formData.groupRoomShifts,
       phone: formData.phone || "0000000000",
       gender: formData.gender || "Male",
       age: formData.age || 30,
@@ -1476,38 +2086,42 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
   if (!inline && !isOpen) return null;
 
   const modalBody = (
-    <div className={`bg-white w-full flex flex-col relative transition-all duration-300 ${inline ? 'h-full max-h-none rounded-none' : isFullscreen ? 'h-full max-h-screen rounded-none' : 'sm:max-w-5xl lg:max-w-[1140px] max-h-[94vh] rounded-2xl shadow-2xl animate-slide-up'}`}>
+    <div className={`bg-white w-full flex flex-col relative transition-all duration-300 ${inline ? 'h-full max-h-none rounded-none' : isFullscreen ? 'h-full max-h-screen rounded-none' : (!initialData ? 'sm:max-w-4xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-[1240px] h-[95vh] max-h-[96vh]' : 'sm:max-w-5xl lg:max-w-7xl xl:max-w-[1440px] 2xl:max-w-[1480px] h-[97vh] max-h-[98vh]') + ' rounded-2xl shadow-2xl animate-slide-up'}`}>
       {!inline && (
-        <div className="p-3 sm:p-3.5 border-b border-[#DDE5D0] flex items-center justify-between shrink-0">
-          <div>
-            <h2 className="text-lg font-bold text-[#1A2E05] tracking-tight">{onlyReservation ? 'New Reservation' : 'Guest Registry'}</h2>
-            <p className="text-[10px] font-bold text-[#4A5E38] mt-0.5">{onlyReservation ? 'Create advance booking reservation' : 'Complete onboarding & ID verification'}</p>
+        <div className="px-3.5 py-2 sm:px-5 sm:py-2.5 border-b border-[#DDE5D0] flex items-center justify-between shrink-0 bg-white">
+          <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap">
+            <h2 className="text-base sm:text-lg font-black text-[#1A2E05] tracking-tight leading-none">
+              {onlyReservation ? 'New Reservation' : 'Guest Registry'}
+            </h2>
+            <span className="text-[10px] sm:text-[11px] font-bold text-[#4A5E38] bg-[#F0F3E8] px-2.5 py-0.5 rounded-full border border-[#DDE5D0]">
+              {onlyReservation ? 'Create advance booking reservation' : 'Complete onboarding & ID verification'}
+            </span>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
             <button
               type="button"
               onClick={handleFullscreenToggle}
-              className="w-8 h-8 flex items-center justify-center bg-[#F0F3E8] text-[#5C7A1F] hover:bg-[#84A63C] hover:text-white rounded-xl transition-all shadow-sm active:scale-95"
+              className="w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center bg-[#F0F3E8] text-[#5C7A1F] hover:bg-[#84A63C] hover:text-white rounded-xl transition-all shadow-sm active:scale-95"
               title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
             >
-              {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+              {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
             </button>
             <button
               type="button"
               onClick={onClose}
-              className="w-8 h-8 flex items-center justify-center bg-[#F0F3E8] text-[#7A8A6A] hover:bg-rose-50 hover:text-rose-600 rounded-xl transition-all shadow-sm active:scale-95"
+              className="w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center bg-[#F0F3E8] text-[#7A8A6A] hover:bg-rose-50 hover:text-rose-600 rounded-xl transition-all shadow-sm active:scale-95"
               title="Close"
             >
-              <X size={16} />
+              <X size={15} />
             </button>
           </div>
         </div>
       )}
       <form onSubmit={handleSubmit} autoComplete="off" className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex-1 overflow-y-auto md:overflow-hidden p-3.5 sm:p-5 flex flex-col md:min-h-0">
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-0 md:flex-1 md:min-h-0">
-            {/* Left Column: Guest Information */}
-            <div className="md:col-span-7 space-y-4 flex flex-col justify-between md:pr-5 md:border-r border-[#DDE5D0] md:max-h-full md:overflow-y-auto custom-top-scrollbar">
+        <div className="flex-1 overflow-y-auto md:overflow-hidden px-3 pt-2.5 pb-3 sm:px-4 sm:pt-2.5 sm:pb-3.5 flex flex-col md:min-h-0">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-0 md:flex-1 md:min-h-0">
+            {/* Column 1: Guest Information (Left) */}
+            <div className={`${initialData ? 'lg:col-span-4' : 'lg:col-span-6'} space-y-4 flex flex-col justify-between lg:pr-4 lg:border-r border-[#DDE5D0] lg:max-h-full lg:overflow-y-auto custom-top-scrollbar`}>
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
@@ -1515,6 +2129,29 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
                     <h3 className="text-sm font-semibold text-[#1A2E05]">Guest Information</h3>
                   </div>
                 </div>
+
+                {/* Registration Number Field (Shown only when enabled by hotel) */}
+                {activeHotel?.enableRegistrationNumber === true && (
+                  <div className="space-y-1 bg-[#F5F7F0] p-2.5 rounded-xl border border-[#DDE5D0] shadow-2xs animate-fade-in">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block">
+                        Registration Number (Reg No)
+                      </label>
+                      <span className="text-[9px] font-bold text-[#84A63C] bg-white px-2 py-0.5 rounded-md border border-[#84A63C]/30">
+                        Auto-Calculated Serial
+                      </span>
+                    </div>
+                    <input
+                      name="registrationNumber"
+                      value={formData.registrationNumber || ''}
+                      onChange={handleChange}
+                      type="text"
+                      placeholder="REG-001"
+                      autoComplete="one-time-code"
+                      className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-bold focus:outline-none focus:border-[#84A63C] text-[#1A2E05]"
+                    />
+                  </div>
+                )}
 
                 {activeHotel?.enablePerGuestRoomAssignment && selectedRoomIds.length > 1 && (
                   <div className="space-y-1.5 bg-[#84A63C]/10 p-2.5 rounded-xl border border-[#84A63C]/30 shadow-sm animate-fade-in">
@@ -1547,6 +2184,7 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
                   </div>
                 )}
                 <div className="space-y-3">
+
                   {/* Row 1: Primary Required Contact Details */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">
@@ -1822,10 +2460,10 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
                         name="address"
                         value={formData.address || ''}
                         onChange={handleChange}
-                        rows={2}
+                        rows={3}
                         placeholder="Guest Address"
                         autoComplete="one-time-code"
-                        className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-bold focus:outline-none focus:bg-white focus:border-[#84A63C] transition-all text-[#1A2E05] resize-none"
+                        className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-bold focus:outline-none focus:bg-white focus:border-[#84A63C] transition-all text-[#1A2E05] resize-none min-h-[76px]"
                       />
                     </div>
                     <div className="space-y-1.5">
@@ -2389,41 +3027,6 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
                       </div>
                     )}
                   </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-[#4A5E38] ml-1">Booking Type</label>
-                      <select
-                        name="bookingTypeCategory"
-                        value={bookingTypeCategory}
-                        onChange={handleBookingTypeCategoryChange}
-                        className="w-full px-3 py-2 bg-white border border-[#DDE5D0] rounded-xl text-xs font-bold focus:outline-none focus:bg-white focus:border-[#84A63C] transition-all cursor-pointer text-[#1A2E05]"
-                      >
-                        <option value="Walk-in">Walk-in</option>
-                        <option value="Online">Online</option>
-                      </select>
-                    </div>
-
-                    {bookingTypeCategory === 'Online' && (
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-bold text-[#4A5E38] ml-1">Online Platform</label>
-                        <select
-                          name="bookingPlatform"
-                          value={selectedPlatform}
-                          onChange={handlePlatformChange}
-                          className="w-full px-3 py-2 bg-white border border-[#DDE5D0] rounded-xl text-xs font-bold focus:outline-none focus:bg-white focus:border-[#84A63C] transition-all cursor-pointer text-[#1A2E05]"
-                        >
-                          {platformsList.length > 0 ? (
-                            platformsList.map(platform => (
-                              <option key={platform} value={platform}>{platform}</option>
-                            ))
-                          ) : (
-                            <option value="">No platforms configured</option>
-                          )}
-                        </select>
-                      </div>
-                    )}
-                  </div>
                 </div>
               </div>
               <div className="p-4 bg-white/40 border border-[#DDE5D0]/60 rounded-xl space-y-1">
@@ -2434,324 +3037,606 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
               </div>
             </div>
 
-            <div className="md:col-span-5 space-y-4 flex flex-col justify-between md:pl-5 md:max-h-full md:overflow-y-auto custom-top-scrollbar">
-              <div className="space-y-3">
-                <div className="flex items-center gap-3">
-                  <Calendar size={18} className="text-[#4A5E38]" />
-                  <h3 className="text-sm font-semibold text-[#1A2E05]">Stay Details</h3>
-                </div>
-                <div className="space-y-3">
-                  <div className="space-y-2 relative" ref={dropdownRef}>
-                    <div className="flex items-center justify-between ml-1">
-                      <label className="text-[10px] font-bold text-[#4A5E38]">Room Selection</label>
-                      <div className="flex bg-[#F0F3E8] p-0.5 rounded-lg border border-[#DDE5D0]">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setBookingMode('single');
-                            setSelectedRoomIds(prev => prev.slice(0, 1));
-                          }}
-                          className={`px-2.5 py-1 rounded-md text-[9px] font-extrabold transition-all duration-300 ${bookingMode === 'single'
-                            ? 'bg-[#84A63C] text-white shadow-sm'
-                            : 'text-[#7A8A6A] hover:bg-[#E2E8D5]'
-                            }`}
+            {/* Column 2 / Right Column */}
+            <div className={`${initialData ? 'lg:col-span-4 lg:px-4 lg:border-r' : 'lg:col-span-6 lg:pl-4'} space-y-4 flex flex-col justify-between border-[#DDE5D0] lg:max-h-full lg:overflow-y-auto custom-top-scrollbar`}>
+              <div className={initialData ? 'space-y-3' : 'space-y-4'}>
+                {(() => {
+                  const hasShift = hasValidShift(formData.previousRoomNumber || initialData?.previousRoomNumber) ||
+                    initialData?.groupBookings?.some(b => hasValidShift(b.previousRoomNumber)) ||
+                    formData.groupRoomShifts?.some(b => hasValidShift(b.previousRoomNumber));
+
+                  if (hasShift) {
+                    return (
+                      <div className="space-y-3 animate-fade-in">
+                        <RoomStaySchedule
+                          isGroup={bookingMode === 'multiple' || (initialData?.groupBookings && initialData.groupBookings.length > 1)}
+                          formData={formData}
+                          setFormData={setFormData}
+                          bill={initialData}
+                          allRooms={rooms}
+                          isFieldsEditable={true}
+                          handleGroupRoomDateChange={handleGroupRoomDateChange}
+                          handleGroupRoomShift={handleGroupRoomShift}
+                          handleDateChange={handleScheduleDateChange}
+                          handleSingleRoomShift={handleSingleRoomShift}
+                          hasValidShift={hasValidShift}
+                          cleanRoomNumber={cleanRoomNumber}
+                        />
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-3">
+                        <Calendar size={18} className="text-[#5C7A1F]" />
+                        <h3 className="text-sm font-semibold text-[#1A2E05]">Stay Details</h3>
+                      </div>
+                      <div className="space-y-2 relative" ref={dropdownRef}>
+                        <div className="flex items-center justify-between ml-1">
+                          <label className="text-[10px] font-bold text-[#4A5E38]">Room Selection</label>
+                          <div className="flex bg-[#F0F3E8] p-0.5 rounded-lg border border-[#DDE5D0]">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setBookingMode('single');
+                                setSelectedRoomIds(prev => prev.slice(0, 1));
+                              }}
+                              className={`px-2.5 py-1 rounded-md text-[9px] font-extrabold transition-all duration-300 ${bookingMode === 'single'
+                                ? 'bg-[#84A63C] text-white shadow-sm'
+                                : 'text-[#7A8A6A] hover:bg-[#E2E8D5]'
+                                }`}
+                            >
+                              Single
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setBookingMode('multiple')}
+                              className={`px-2.5 py-1 rounded-md text-[9px] font-extrabold transition-all duration-300 ${bookingMode === 'multiple'
+                                ? 'bg-[#84A63C] text-white shadow-sm'
+                                : 'text-[#7A8A6A] hover:bg-[#E2E8D5]'
+                                }`}
+                            >
+                              Multiple
+                            </button>
+                          </div>
+                        </div>
+
+                        <div
+                          onClick={() => setShowRoomDropdown(!showRoomDropdown)}
+                          className="w-full min-h-[48px] px-4 py-2 bg-white border border-[#DDE5D0] rounded-xl text-sm font-bold cursor-pointer flex flex-wrap gap-1.5 items-center justify-between"
                         >
-                          Single
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setBookingMode('multiple')}
-                          className={`px-2.5 py-1 rounded-md text-[9px] font-extrabold transition-all duration-300 ${bookingMode === 'multiple'
-                            ? 'bg-[#84A63C] text-white shadow-sm'
-                            : 'text-[#7A8A6A] hover:bg-[#E2E8D5]'
-                            }`}
-                        >
-                          Multiple
-                        </button>
+                          {selectedRoomIds.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {selectedRoomIds.map(id => {
+                                const r = rooms.find(room => room.id === id) || (initialData?.Room && initialData.roomId === id ? { roomNumber: initialData.Room.roomNumber } : null);
+                                return (
+                                  <span
+                                    key={id}
+                                    className="bg-[#84A63C]/10 text-[#5C7A1F] px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 hover:bg-[#84A63C]/20 transition-all"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleToggleRoom(id);
+                                    }}
+                                  >
+                                    Room {r ? cleanRoomNumber(r.roomNumber) : 'N/A'}
+                                    <X size={12} className="stroke-[2.5]" />
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <span className="text-[#7A8A6A]/60 text-xs">Select Rooms...</span>
+                          )}
+                          <ChevronRight size={16} className={`text-[#7A8A6A] transform transition-transform duration-300 ${showRoomDropdown ? 'rotate-90' : ''}`} />
+                        </div>
+
+                        {showRoomDropdown && (
+                          <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-[#DDE5D0] rounded-2xl shadow-2xl z-[200] max-h-60 overflow-y-auto p-3 grid grid-cols-2 sm:grid-cols-3 gap-2 animate-fade-in no-scrollbar">
+                            {rooms.map(room => {
+                              const isSelected = selectedRoomIds.includes(room.id);
+                              const availability = checkRoomAvailability(room.id, formData.checkInDate, formData.checkOutDate);
+                              const isAvailable = availability.available || (initialData && initialData.roomId === room.id);
+
+                              let containerStyle = '';
+                              let textStyle = '';
+
+                              if (isSelected) {
+                                containerStyle = 'bg-[#84A63C] text-white border-[#84A63C] shadow-md shadow-[#84A63C]/20';
+                                textStyle = 'text-white/80';
+                              } else if (isAvailable) {
+                                containerStyle = 'bg-[#F0F3E8] text-[#1A2E05] border-[#DDE5D0] hover:bg-white hover:border-[#84A63C]';
+                                textStyle = 'text-[#7A8A6A]';
+                              } else if (availability.statusType === 'cleaning') {
+                                containerStyle = 'bg-blue-50 text-blue-700 border-blue-200 cursor-not-allowed opacity-90';
+                                textStyle = 'text-blue-600 font-bold';
+                              } else if (availability.statusType === 'maintenance') {
+                                containerStyle = 'bg-amber-50 text-amber-700 border-amber-200 cursor-not-allowed opacity-90';
+                                textStyle = 'text-amber-600 font-bold';
+                              } else {
+                                containerStyle = 'bg-red-50 text-red-400 border-red-100 cursor-not-allowed opacity-60';
+                                textStyle = 'text-red-400';
+                              }
+
+                              return (
+                                <div
+                                  key={room.id}
+                                  onClick={() => handleToggleRoom(room.id)}
+                                  className={`p-2.5 rounded-xl border text-center cursor-pointer transition-all duration-300 flex flex-col justify-center items-center gap-0.5 ${containerStyle}`}
+                                >
+                                  <span className="text-xs font-black">Room {room.roomNumber}</span>
+                                  <span className={`text-[8px] font-extrabold ${textStyle}`}>
+                                    {activeHotel?.hasRoomType !== false && `${room.type} `}({isSelected
+                                      ? 'Selected'
+                                      : isAvailable
+                                        ? (availability.upcoming ? availability.upcoming : 'Vacant')
+                                        : availability.reason})
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-bold text-[#4A5E38] ml-1">Booking Type</label>
+                          <select
+                            name="bookingTypeCategory"
+                            value={bookingTypeCategory}
+                            onChange={handleBookingTypeCategoryChange}
+                            className="w-full px-3 py-2 bg-white border border-[#DDE5D0] rounded-xl text-xs font-bold focus:outline-none focus:bg-white focus:border-[#84A63C] transition-all cursor-pointer text-[#1A2E05]"
+                          >
+                            <option value="Walk-in">Walk-in</option>
+                            <option value="Online">Online</option>
+                          </select>
+                        </div>
+
+                        {bookingTypeCategory === 'Online' && (
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold text-[#4A5E38] ml-1">Online Platform</label>
+                            <select
+                              name="bookingPlatform"
+                              value={selectedPlatform}
+                              onChange={handlePlatformChange}
+                              className="w-full px-3 py-2 bg-white border border-[#DDE5D0] rounded-xl text-xs font-bold focus:outline-none focus:bg-white focus:border-[#84A63C] transition-all cursor-pointer text-[#1A2E05]"
+                            >
+                              {platformsList.length > 0 ? (
+                                platformsList.map(platform => (
+                                  <option key={platform} value={platform}>{platform}</option>
+                                ))
+                              ) : (
+                                <option value="">No platforms configured</option>
+                              )}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-4">
+                        {/* Booking (Date & Time) */}
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-black text-[#1A2E05] ml-1 uppercase tracking-wider block">Booking (Date & Time)</label>
+                          <div className="flex gap-2">
+                            <div className="flex-[3]">
+                              <input
+                                type="date"
+                                value={formData.bookingDate ? formatDateForInput(formData.bookingDate) : ''}
+                                onChange={(e) => handleDateChange('bookingDate', e.target.value)}
+                                disabled={isBookingDisabled}
+                                className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-black focus:outline-none focus:border-[#84A63C] transition-all cursor-pointer text-[#1A2E05] disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-gray-50"
+                              />
+                            </div>
+                            <div className="flex-[2] min-w-[120px]">
+                              <input
+                                type="time"
+                                value={formData.bookingDate ? formData.bookingDate.split('T')[1] || '12:00' : '12:00'}
+                                onChange={(e) => handleTimeChange('bookingDate', e.target.value)}
+                                disabled={isBookingDisabled}
+                                className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-black focus:outline-none focus:border-[#84A63C] transition-all text-center cursor-pointer text-[#1A2E05] disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-gray-50"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Check-in Group */}
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-black text-[#1A2E05] ml-1 uppercase tracking-wider block">Check-in (Date & Time)</label>
+                          <div className="flex gap-2">
+                            <div className="flex-[3]">
+                              <input
+                                type="date"
+                                value={formData.checkInDate ? formatDateForInput(formData.checkInDate) : ''}
+                                onChange={(e) => handleDateChange('checkInDate', e.target.value)}
+                                disabled={isCheckInDisabled}
+                                className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-black focus:outline-none focus:border-[#84A63C] transition-all cursor-pointer text-[#1A2E05] disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-gray-50"
+                              />
+                            </div>
+                            <div className="flex-[2] min-w-[120px]">
+                              <input
+                                type="time"
+                                value={formData.checkInDate ? formData.checkInDate.split('T')[1] || '12:00' : '12:00'}
+                                onChange={(e) => handleTimeChange('checkInDate', e.target.value)}
+                                disabled={isCheckInDisabled}
+                                className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-black focus:outline-none focus:border-[#84A63C] transition-all text-center cursor-pointer text-[#1A2E05] disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-gray-50"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Check-out Group */}
+                        <div className="space-y-1.5">
+                          <label className="text-[10px] font-black text-[#1A2E05] ml-1 uppercase tracking-wider block">Check-out (Date & Time)</label>
+                          <div className="flex gap-2">
+                            <div className="flex-[3]">
+                              <input
+                                type="date"
+                                value={formData.checkOutDate ? formatDateForInput(formData.checkOutDate) : ''}
+                                onChange={(e) => handleDateChange('checkOutDate', e.target.value)}
+                                className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-black focus:outline-none focus:border-[#84A63C] transition-all cursor-pointer text-[#1A2E05]"
+                              />
+                            </div>
+                            <div className="flex-[2] min-w-[120px]">
+                              <input
+                                type="time"
+                                value={formData.checkOutDate ? formData.checkOutDate.split('T')[1] || convertTo24Hour(activeHotel?.checkoutTime) : convertTo24Hour(activeHotel?.checkoutTime)}
+                                onChange={(e) => handleTimeChange('checkOutDate', e.target.value)}
+                                className="w-full px-3 py-2 bg-white border border-[#DDE5D0] rounded-xl text-xs font-bold focus:outline-none focus:border-[#84A63C] transition-all text-center"
+                              />
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     </div>
+                  );
+                })()}
 
-                    <div
-                      onClick={() => setShowRoomDropdown(!showRoomDropdown)}
-                      className="w-full min-h-[48px] px-4 py-2 bg-white border border-[#DDE5D0] rounded-xl text-sm font-bold cursor-pointer flex flex-wrap gap-1.5 items-center justify-between"
-                    >
-                      {selectedRoomIds.length > 0 ? (
-                        <div className="flex flex-wrap gap-1.5">
-                          {selectedRoomIds.map(id => {
-                            const r = rooms.find(room => room.id === id) || (initialData?.Room && initialData.roomId === id ? { roomNumber: initialData.Room.roomNumber } : null);
-                            return (
-                              <span
-                                key={id}
-                                className="bg-[#84A63C]/10 text-[#5C7A1F] px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 hover:bg-[#84A63C]/20 transition-all"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleToggleRoom(id);
-                                }}
-                              >
-                                Room {r ? cleanRoomNumber(r.roomNumber) : 'N/A'}
-                                <X size={12} className="stroke-[2.5]" />
-                              </span>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <span className="text-[#7A8A6A]/60 text-xs">Select Rooms...</span>
-                      )}
-                      <ChevronRight size={16} className={`text-[#7A8A6A] transform transition-transform duration-300 ${showRoomDropdown ? 'rotate-90' : ''}`} />
+                {(isEarlyCheckIn || chargePreviousDay || Number(earlyCheckInCharge) > 0) && (
+                  <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 mt-4 space-y-2.5 animate-fade-in text-left">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="flex-1">
+                        <p className="text-[10px] font-black text-amber-900 uppercase tracking-wider">Early Check-in</p>
+                        <p className="text-[9px] text-amber-700 font-semibold leading-tight">
+                          Guest check-in time is before standard checkout time ({activeHotel?.checkoutTime || '11:00 AM'}). Charge for early check-in?
+                        </p>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={chargePreviousDay}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setChargePreviousDay(checked);
+                          if (!checked) {
+                            setEarlyCheckInCharge(0);
+                          } else if (earlyCheckInType === 'custom_fee' && (!earlyCheckInCharge || Number(earlyCheckInCharge) === 0)) {
+                            let standardTotal = 0;
+                            selectedRoomIds.forEach(id => {
+                              const r = rooms.find(room => room.id === id);
+                              if (r) standardTotal += Number(r.pricePerNight || 0);
+                            });
+                            setEarlyCheckInCharge(standardTotal);
+                          }
+                        }}
+                        className="w-4 h-4 text-[#84A63C] border-[#DDE5D0] rounded focus:ring-[#84A63C] cursor-pointer"
+                      />
                     </div>
 
-                    {showRoomDropdown && (
-                      <div className="absolute left-0 right-0 top-full mt-1.5 bg-white border border-[#DDE5D0] rounded-2xl shadow-2xl z-[200] max-h-60 overflow-y-auto p-3 grid grid-cols-2 sm:grid-cols-3 gap-2 animate-fade-in no-scrollbar">
-                        {rooms.map(room => {
-                          const isSelected = selectedRoomIds.includes(room.id);
-                          const availability = checkRoomAvailability(room.id, formData.checkInDate, formData.checkOutDate);
-                          const isAvailable = availability.available || (initialData && initialData.roomId === room.id);
+                    {chargePreviousDay && (
+                      <div className="space-y-2 border-t border-amber-200/80 pt-2 animate-fade-in">
+                        <label className="text-[9px] font-black text-amber-800 uppercase tracking-wider block">
+                          Early Check-in Mode
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <label className={`flex items-center gap-2 p-2 rounded-xl border text-xs font-bold cursor-pointer transition-all ${earlyCheckInType === 'full_day'
+                            ? 'bg-white border-[#84A63C] text-[#1A2E05] shadow-sm'
+                            : 'bg-amber-100/60 border-amber-200 text-amber-900 hover:bg-amber-100'
+                            }`}>
+                            <input
+                              type="radio"
+                              name="earlyCheckInType"
+                              value="full_day"
+                              checked={earlyCheckInType === 'full_day'}
+                              onChange={() => {
+                                setEarlyCheckInType('full_day');
+                                setEarlyCheckInCharge(0);
+                              }}
+                              className="text-[#84A63C] focus:ring-[#84A63C]"
+                            />
+                            <span className="text-[10px] sm:text-xs">Previous Full Day</span>
+                          </label>
 
-                          let containerStyle = '';
-                          let textStyle = '';
+                          <label className={`flex items-center gap-2 p-2 rounded-xl border text-xs font-bold cursor-pointer transition-all ${earlyCheckInType === 'custom_fee'
+                            ? 'bg-white border-[#84A63C] text-[#1A2E05] shadow-sm'
+                            : 'bg-amber-100/60 border-amber-200 text-amber-900 hover:bg-amber-100'
+                            }`}>
+                            <input
+                              type="radio"
+                              name="earlyCheckInType"
+                              value="custom_fee"
+                              checked={earlyCheckInType === 'custom_fee'}
+                              onChange={() => {
+                                setEarlyCheckInType('custom_fee');
+                                if (!earlyCheckInCharge || Number(earlyCheckInCharge) === 0) {
+                                  let standardTotal = 0;
+                                  selectedRoomIds.forEach(id => {
+                                    const r = rooms.find(room => room.id === id);
+                                    if (r) standardTotal += Number(r.pricePerNight || 0);
+                                  });
+                                  setEarlyCheckInCharge(standardTotal);
+                                }
+                              }}
+                              className="text-[#84A63C] focus:ring-[#84A63C]"
+                            />
+                            <span className="text-[10px] sm:text-xs">Custom Charge (₹)</span>
+                          </label>
+                        </div>
 
-                          if (isSelected) {
-                            containerStyle = 'bg-[#84A63C] text-white border-[#84A63C] shadow-md shadow-[#84A63C]/20';
-                            textStyle = 'text-white/80';
-                          } else if (isAvailable) {
-                            containerStyle = 'bg-[#F0F3E8] text-[#1A2E05] border-[#DDE5D0] hover:bg-white hover:border-[#84A63C]';
-                            textStyle = 'text-[#7A8A6A]';
-                          } else if (availability.statusType === 'cleaning') {
-                            containerStyle = 'bg-blue-50 text-blue-700 border-blue-200 cursor-not-allowed opacity-90';
-                            textStyle = 'text-blue-600 font-bold';
-                          } else if (availability.statusType === 'maintenance') {
-                            containerStyle = 'bg-amber-50 text-amber-700 border-amber-200 cursor-not-allowed opacity-90';
-                            textStyle = 'text-amber-600 font-bold';
-                          } else {
-                            containerStyle = 'bg-red-50 text-red-400 border-red-100 cursor-not-allowed opacity-60';
-                            textStyle = 'text-red-400';
-                          }
-
-                          return (
-                            <div
-                              key={room.id}
-                              onClick={() => handleToggleRoom(room.id)}
-                              className={`p-2.5 rounded-xl border text-center cursor-pointer transition-all duration-300 flex flex-col justify-center items-center gap-0.5 ${containerStyle}`}
-                            >
-                              <span className="text-xs font-black">Room {room.roomNumber}</span>
-                              <span className={`text-[8px] font-extrabold ${textStyle}`}>
-                                {activeHotel?.hasRoomType !== false && `${room.type} `}({isSelected
-                                  ? 'Selected'
-                                  : isAvailable
-                                    ? (availability.upcoming ? availability.upcoming : 'Vacant')
-                                    : availability.reason})
-                              </span>
-                            </div>
-                          );
-                        })}
+                        {earlyCheckInType === 'custom_fee' && (
+                          <div className="space-y-1 pt-1 animate-fade-in text-left">
+                            <label className="text-[9px] font-black text-amber-800 uppercase tracking-wider block">
+                              Amount to charge for early check-in (₹)
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              value={earlyCheckInCharge}
+                              onChange={(e) => setEarlyCheckInCharge(e.target.value === '' ? '' : (parseFloat(e.target.value) || 0))}
+                              onWheel={(e) => e.target.blur()}
+                              className="w-full px-3 py-1.5 bg-white border border-amber-300 rounded-xl text-xs font-bold focus:outline-none focus:border-[#84A63C] text-[#1A2E05]"
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                  <div className="space-y-4">
-                    {/* Booking (Date & Time) */}
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-black text-[#1A2E05] ml-1 uppercase tracking-wider block">Booking (Date & Time)</label>
-                      <div className="flex gap-2">
-                        <div className="flex-[3]">
-                          <input
-                            type="date"
-                            value={formData.bookingDate ? formatDateForInput(formData.bookingDate) : ''}
-                            onChange={(e) => handleDateChange('bookingDate', e.target.value)}
-                            disabled={isBookingDisabled}
-                            className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-black focus:outline-none focus:border-[#84A63C] transition-all cursor-pointer text-[#1A2E05] disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-gray-50"
-                          />
-                        </div>
-                        <div className="flex-[2] min-w-[120px]">
-                          <input
-                            type="time"
-                            value={formData.bookingDate ? formData.bookingDate.split('T')[1] || '12:00' : '12:00'}
-                            onChange={(e) => handleTimeChange('bookingDate', e.target.value)}
-                            disabled={isBookingDisabled}
-                            className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-black focus:outline-none focus:border-[#84A63C] transition-all text-center cursor-pointer text-[#1A2E05] disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-gray-50"
-                          />
-                        </div>
-                      </div>
+                )}
+
+                {/* If New Guest (2-column layout), render Billing & Summary right here under Stay Details with a clean divider */}
+                {!initialData && (
+                  <div className="space-y-3 pt-3 border-t border-[#DDE5D0]/80">
+                    <div className="flex items-center gap-3">
+                      <Receipt size={18} className="text-[#5C7A1F]" />
+                      <h3 className="text-sm font-semibold text-[#1A2E05]">Billing & Summary</h3>
                     </div>
 
-                    {/* Check-in Group */}
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-black text-[#1A2E05] ml-1 uppercase tracking-wider block">Check-in (Date & Time)</label>
-                      <div className="flex gap-2">
-                        <div className="flex-[3]">
-                          <input
-                            type="date"
-                            value={formData.checkInDate ? formatDateForInput(formData.checkInDate) : ''}
-                            onChange={(e) => handleDateChange('checkInDate', e.target.value)}
-                            disabled={isCheckInDisabled}
-                            className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-black focus:outline-none focus:border-[#84A63C] transition-all cursor-pointer text-[#1A2E05] disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-gray-50"
-                          />
-                        </div>
-                        <div className="flex-[2] min-w-[120px]">
-                          <input
-                            type="time"
-                            value={formData.checkInDate ? formData.checkInDate.split('T')[1] || '12:00' : '12:00'}
-                            onChange={(e) => handleTimeChange('checkInDate', e.target.value)}
-                            disabled={isCheckInDisabled}
-                            className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-black focus:outline-none focus:border-[#84A63C] transition-all text-center cursor-pointer text-[#1A2E05] disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-gray-50"
-                          />
-                        </div>
-                      </div>
-                    </div>
+                    {/* GST Calculator & Summary Card */}
+                    <GstCalculator
+                      showCorporateDetails={false}
+                      gstOption={gstOption}
+                      gstRate={gstRate}
+                      isCustomGst={isCustomGst}
+                      handleGstOptionChange={handleGstOptionChange}
+                      handleGstRateChange={handleGstRateChange}
+                      setIsCustomGst={setIsCustomGst}
+                      subTotal={subTotal}
+                      gstAmount={gstAmount}
+                      grandTotal={grandTotal}
+                      guestGst={formData.guestGst}
+                      companyName={formData.companyName}
+                      companyAddress={formData.companyAddress}
+                      onFieldChange={handleChange}
+                      roomCalculationDetails={roomCalculationDetails}
+                      onRoomRateChange={handleRoomRateChange}
+                      chargePreviousDay={chargePreviousDay && earlyCheckInType === 'custom_fee'}
+                      earlyCheckInCharge={earlyCheckInCharge}
+                      onEarlyCheckInChargeChange={setEarlyCheckInCharge}
+                      discount={Number(formData.discount || 0)}
+                    />
 
-                    {/* Check-out Group */}
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-black text-[#1A2E05] ml-1 uppercase tracking-wider block">Check-out (Date & Time)</label>
-                      <div className="flex gap-2">
-                        <div className="flex-[3]">
-                          <input
-                            type="date"
-                            value={formData.checkOutDate ? formatDateForInput(formData.checkOutDate) : ''}
-                            onChange={(e) => handleDateChange('checkOutDate', e.target.value)}
-                            className="w-full px-3 py-2 bg-white border border-[#C8D6B0] rounded-xl text-xs font-black focus:outline-none focus:border-[#84A63C] transition-all cursor-pointer text-[#1A2E05]"
-                          />
+                    {/* Discount Card */}
+                    <div className="bg-[#FBFDF8] p-2.5 rounded-xl border border-[#DDE5D0] space-y-1.5 mt-2 transition-all duration-200">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <Tag size={13} className="text-[#84A63C]" />
+                          <span className="text-xs font-bold text-[#1A2E05]">Discount</span>
                         </div>
-                        <div className="flex-[2] min-w-[120px]">
-                          <input
-                            type="time"
-                            value={formData.checkOutDate ? formData.checkOutDate.split('T')[1] || convertTo24Hour(activeHotel?.checkoutTime) : convertTo24Hour(activeHotel?.checkoutTime)}
-                            onChange={(e) => handleTimeChange('checkOutDate', e.target.value)}
-                            className="w-full px-3 py-2 bg-white border border-[#DDE5D0] rounded-xl text-xs font-bold focus:outline-none focus:border-[#84A63C] transition-all text-center"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  {(isEarlyCheckIn || chargePreviousDay || Number(earlyCheckInCharge) > 0) && (
-                    <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 mt-4 space-y-2.5 animate-fade-in text-left">
-                      <div className="flex items-center justify-between gap-4">
-                        <div className="flex-1">
-                          <p className="text-[10px] font-black text-amber-900 uppercase tracking-wider">Early Check-in</p>
-                          <p className="text-[9px] text-amber-700 font-semibold leading-tight">
-                            Guest check-in time is before standard checkout time ({activeHotel?.checkoutTime || '11:00 AM'}). Charge for early check-in?
-                          </p>
-                        </div>
-                        <input
-                          type="checkbox"
-                          checked={chargePreviousDay}
-                          onChange={(e) => {
-                            const checked = e.target.checked;
-                            setChargePreviousDay(checked);
-                            if (!checked) {
-                              setEarlyCheckInCharge(0);
-                            } else if (earlyCheckInType === 'custom_fee' && (!earlyCheckInCharge || Number(earlyCheckInCharge) === 0)) {
-                              let standardTotal = 0;
-                              selectedRoomIds.forEach(id => {
-                                const r = rooms.find(room => room.id === id);
-                                if (r) standardTotal += Number(r.pricePerNight || 0);
-                              });
-                              setEarlyCheckInCharge(standardTotal);
-                            }
-                          }}
-                          className="w-4 h-4 text-[#84A63C] border-[#DDE5D0] rounded focus:ring-[#84A63C] cursor-pointer"
-                        />
+                        {Number(formData.discount || 0) > 0 && (
+                          <span className="text-[9px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.2 rounded-full">
+                            Applied: ₹{Number(formData.discount).toLocaleString()}
+                          </span>
+                        )}
                       </div>
 
-                      {chargePreviousDay && (
-                        <div className="space-y-2 border-t border-amber-200/80 pt-2 animate-fade-in">
-                          <label className="text-[9px] font-black text-amber-800 uppercase tracking-wider block">
-                            Early Check-in Mode
-                          </label>
-                          <div className="grid grid-cols-2 gap-2">
-                            <label className={`flex items-center gap-2 p-2 rounded-xl border text-xs font-bold cursor-pointer transition-all ${earlyCheckInType === 'full_day'
-                              ? 'bg-white border-[#84A63C] text-[#1A2E05] shadow-sm'
-                              : 'bg-amber-100/60 border-amber-200 text-amber-900 hover:bg-amber-100'
-                              }`}>
-                              <input
-                                type="radio"
-                                name="earlyCheckInType"
-                                value="full_day"
-                                checked={earlyCheckInType === 'full_day'}
-                                onChange={() => {
-                                  setEarlyCheckInType('full_day');
-                                  setEarlyCheckInCharge(0);
-                                }}
-                                className="text-[#84A63C] focus:ring-[#84A63C]"
-                              />
-                              <span className="text-[10px] sm:text-xs">Previous Full Day</span>
-                            </label>
-
-                            <label className={`flex items-center gap-2 p-2 rounded-xl border text-xs font-bold cursor-pointer transition-all ${earlyCheckInType === 'custom_fee'
-                              ? 'bg-white border-[#84A63C] text-[#1A2E05] shadow-sm'
-                              : 'bg-amber-100/60 border-amber-200 text-amber-900 hover:bg-amber-100'
-                              }`}>
-                              <input
-                                type="radio"
-                                name="earlyCheckInType"
-                                value="custom_fee"
-                                checked={earlyCheckInType === 'custom_fee'}
-                                onChange={() => {
-                                  setEarlyCheckInType('custom_fee');
-                                  if (!earlyCheckInCharge || Number(earlyCheckInCharge) === 0) {
-                                    let standardTotal = 0;
-                                    selectedRoomIds.forEach(id => {
-                                      const r = rooms.find(room => room.id === id);
-                                      if (r) standardTotal += Number(r.pricePerNight || 0);
-                                    });
-                                    setEarlyCheckInCharge(standardTotal);
-                                  }
-                                }}
-                                className="text-[#84A63C] focus:ring-[#84A63C]"
-                              />
-                              <span className="text-[10px] sm:text-xs">Custom Charge (₹)</span>
-                            </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-0.5">
+                          <label className="text-[9px] font-black text-[#1A2E05] tracking-wider uppercase block">Discount Amount (₹)</label>
+                          <div className="relative">
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-black text-[#1A2E05]">₹</span>
+                            <input
+                              name="discount"
+                              value={formData.discount ?? ''}
+                              onChange={(e) => {
+                                const val = e.target.value === '' ? '' : Number(e.target.value);
+                                setFormData(prev => ({ ...prev, discount: val }));
+                              }}
+                              type="number"
+                              step="any"
+                              min="0"
+                              placeholder="0.00"
+                              onWheel={(e) => e.target.blur()}
+                              className="w-full pl-6 pr-2.5 py-1 bg-white border border-[#C8D6B0] focus:border-[#84A63C] rounded-lg text-xs font-black text-[#1A2E05] transition-all placeholder:text-[#7A8A6A]/60"
+                            />
                           </div>
+                        </div>
 
-                          {earlyCheckInType === 'custom_fee' && (
-                            <div className="space-y-1 pt-1 animate-fade-in text-left">
-                              <label className="text-[9px] font-black text-amber-800 uppercase tracking-wider block">
-                                Amount to charge for early check-in (₹)
-                              </label>
-                              <input
-                                type="number"
-                                min="0"
-                                step="any"
-                                value={earlyCheckInCharge}
-                                onChange={(e) => setEarlyCheckInCharge(e.target.value === '' ? '' : (parseFloat(e.target.value) || 0))}
-                                onWheel={(e) => e.target.blur()}
-                                className="w-full px-3 py-1.5 bg-white border border-amber-300 rounded-xl text-xs font-bold focus:outline-none focus:border-[#84A63C] text-[#1A2E05]"
-                              />
-                            </div>
-                          )}
+                        <div className="space-y-0.5">
+                          <label className="text-[9px] font-black text-[#1A2E05] tracking-wider uppercase block">Purpose of Discount</label>
+                          <input
+                            name="discountReason"
+                            value={formData.discountReason || ''}
+                            onChange={handleChange}
+                            type="text"
+                            placeholder="e.g. Corporate, VIP, Promo"
+                            className="w-full px-2.5 py-1 bg-white border border-[#C8D6B0] focus:border-[#84A63C] rounded-lg text-xs font-bold text-[#1A2E05] transition-all placeholder:font-normal placeholder:text-[#7A8A6A]/60"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Payment Collection Card */}
+                    <div className="bg-[#FBFDF8] p-2.5 rounded-xl border border-[#DDE5D0] space-y-2 mt-2 transition-all duration-200">
+                      <div className="flex items-center justify-between border-b border-[#DDE5D0]/40 pb-1">
+                        <div className="flex items-center gap-1.5">
+                          <CreditCard size={13} className="text-[#84A63C]" />
+                          <span className="text-xs font-bold text-[#1A2E05]">Payment Collection</span>
+                        </div>
+                        <span className="text-[9px] font-bold text-[#7A8A6A]">
+                          Mode: {formData.paymentMode || 'Cash'}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-0.5">
+                          <label className="text-[9px] font-black text-[#1A2E05] tracking-wider uppercase block">Amount Paid (₹)</label>
+                          <div className="relative">
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-black text-[#1A2E05]">₹</span>
+                            <input
+                              name="amountPaid"
+                              value={formData.amountPaid ?? ''}
+                              onChange={(e) => {
+                                const val = e.target.value === '' ? '' : Number(e.target.value);
+                                setFormData(prev => ({ ...prev, amountPaid: val }));
+                              }}
+                              type="number"
+                              step="any"
+                              min="0"
+                              placeholder="0.00"
+                              onWheel={(e) => e.target.blur()}
+                              className="w-full pl-6 pr-2.5 py-1 bg-white border border-[#C8D6B0] focus:border-[#84A63C] rounded-lg text-xs font-black text-[#1A2E05] transition-all placeholder:text-[#7A8A6A]/60"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="space-y-0.5">
+                          <label className="text-[9px] font-black text-[#1A2E05] tracking-wider uppercase block">Payment Mode</label>
+                          <select
+                            name="paymentMode"
+                            value={formData.paymentMode || 'Cash'}
+                            onChange={handleChange}
+                            className="w-full px-2 py-1 bg-white border border-[#C8D6B0] focus:border-[#84A63C] rounded-lg text-xs font-black text-[#1A2E05] cursor-pointer transition-all"
+                          >
+                            <option value="Cash">Cash</option>
+                            <option value="Online">Online / UPI</option>
+                            <option value="Card">Card / POS</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {formData.paymentMode === 'Online' && banksList.length > 0 && (
+                        <div className="space-y-0.5 animate-fade-in">
+                          <label className="text-[9px] font-black text-[#1A2E05] tracking-wider uppercase block">
+                            Select Bank / Account <span className="text-red-500">*</span>
+                          </label>
+                          <select
+                            name="paymentBank"
+                            value={formData.paymentBank || ''}
+                            onChange={handleChange}
+                            className={`w-full px-2 py-1 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                              (formData.paymentMode === 'Online' && (parseFloat(formData.amountPaid) || 0) > 0 && (!formData.paymentBank || !formData.paymentBank.trim()))
+                                ? 'bg-red-50 border-2 border-red-500 text-red-700 focus:border-red-600 focus:ring-1 focus:ring-red-500'
+                                : 'bg-white border border-[#C8D6B0] focus:border-[#84A63C] text-[#1A2E05]'
+                            }`}
+                          >
+                            <option value="">-- Choose Bank --</option>
+                            {banksList.map(bank => (
+                              <option key={bank} value={bank}>{bank}</option>
+                            ))}
+                          </select>
                         </div>
                       )}
                     </div>
-                  )}
-                </div>
-              </div>
 
-              {/* GST Calculator & Summary Card */}
-              <GstCalculator
-                showCorporateDetails={false}
-                gstOption={gstOption}
-                gstRate={gstRate}
-                isCustomGst={isCustomGst}
-                handleGstOptionChange={handleGstOptionChange}
-                handleGstRateChange={handleGstRateChange}
-                setIsCustomGst={setIsCustomGst}
-                subTotal={subTotal}
-                gstAmount={gstAmount}
-                grandTotal={grandTotal}
-                guestGst={formData.guestGst}
-                companyName={formData.companyName}
-                companyAddress={formData.companyAddress}
-                onFieldChange={handleChange}
-                roomCalculationDetails={roomCalculationDetails}
-                onRoomRateChange={(roomId, newRate) => {
-                  setCustomRates(prev => ({
-                    ...prev,
-                    [roomId]: newRate
-                  }));
-                }}
-                chargePreviousDay={chargePreviousDay && earlyCheckInType === 'custom_fee'}
-                earlyCheckInCharge={earlyCheckInCharge}
-                onEarlyCheckInChargeChange={setEarlyCheckInCharge}
-                discount={Number(formData.discount || 0)}
-              />
+                    {/* Corporate / GST Details Section */}
+                    {gstOption !== 'none' && (
+                      <div className="bg-[#FBFDF8] p-2.5 rounded-xl border border-[#C8D6B0] space-y-2 mt-2 animate-fade-in text-left transition-all duration-200">
+                        <div className="space-y-0.5">
+                          <label className="text-[9px] font-black text-[#1A2E05] tracking-wider uppercase block">Customer GST Number</label>
+                          <input
+                            type="text"
+                            name="guestGst"
+                            value={formData.guestGst || ''}
+                            onChange={handleChange}
+                            placeholder="e.g. 27AAAAA1111A1Z1"
+                            autoComplete="one-time-code"
+                            className="w-full px-2.5 py-1 bg-white border border-[#C8D6B0] focus:border-[#84A63C] rounded-lg text-xs font-black uppercase text-[#1A2E05] transition-all placeholder:normal-case placeholder:font-normal placeholder:text-[#7A8A6A]/60 tracking-wider"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="space-y-0.5">
+                            <label className="text-[9px] font-black text-[#1A2E05] tracking-wider uppercase block">Company Name</label>
+                            <input
+                              type="text"
+                              name="companyName"
+                              value={formData.companyName || ''}
+                              onChange={handleChange}
+                              placeholder="e.g. ABC Pvt Ltd"
+                              autoComplete="one-time-code"
+                              className="w-full px-2.5 py-1 bg-white border border-[#C8D6B0] focus:border-[#84A63C] rounded-lg text-xs font-black text-[#1A2E05] transition-all placeholder:text-[#7A8A6A]/60"
+                            />
+                          </div>
+                          <div className="space-y-0.5">
+                            <label className="text-[9px] font-black text-[#4A5E38] tracking-wider uppercase block">Company Address</label>
+                            <input
+                              type="text"
+                              name="companyAddress"
+                              value={formData.companyAddress || ''}
+                              onChange={handleChange}
+                              placeholder="e.g. Mumbai, India"
+                              autoComplete="one-time-code"
+                              className="w-full px-2.5 py-1 bg-white border border-[#DDE5D0] focus:border-[#84A63C] rounded-lg text-xs font-bold text-[#1A2E05] transition-all placeholder:text-[#7A8A6A]/50"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Total Billing */}
+                    <div className="p-4 bg-[#1A2E05] text-white rounded-2xl text-center space-y-1 relative group mt-4">
+                      <p className="text-[10px] font-bold text-[#84A63C]">Total Billing</p>
+                      <div className="flex items-center justify-center gap-2">
+                        <p className="text-2xl font-bold">₹{grandTotal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Column 3: Billing & Summary (Right in Edit Mode) */}
+            {initialData && (
+              <div className="lg:col-span-4 space-y-4 flex flex-col justify-between lg:pl-4 lg:max-h-full lg:overflow-y-auto custom-top-scrollbar">
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <Receipt size={18} className="text-[#5C7A1F]" />
+                    <h3 className="text-sm font-semibold text-[#1A2E05]">Billing & Summary</h3>
+                  </div>
+
+                {/* GST Calculator & Summary Card */}
+                <GstCalculator
+                  showCorporateDetails={false}
+                  gstOption={gstOption}
+                  gstRate={gstRate}
+                  isCustomGst={isCustomGst}
+                  handleGstOptionChange={handleGstOptionChange}
+                  handleGstRateChange={handleGstRateChange}
+                  setIsCustomGst={setIsCustomGst}
+                  subTotal={subTotal}
+                  gstAmount={gstAmount}
+                  grandTotal={grandTotal}
+                  guestGst={formData.guestGst}
+                  companyName={formData.companyName}
+                  companyAddress={formData.companyAddress}
+                  onFieldChange={handleChange}
+                  roomCalculationDetails={roomCalculationDetails}
+                  onRoomRateChange={handleRoomRateChange}
+                  chargePreviousDay={chargePreviousDay && earlyCheckInType === 'custom_fee'}
+                  earlyCheckInCharge={earlyCheckInCharge}
+                  onEarlyCheckInChargeChange={setEarlyCheckInCharge}
+                  discount={Number(formData.discount || 0)}
+                />
 
               {/* Discount Card */}
               <div className="bg-[#FBFDF8] p-2.5 rounded-xl border border-[#DDE5D0] space-y-1.5 mt-2 transition-all duration-200">
@@ -2920,6 +3805,7 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
                   </div>
                 </div>
               )}
+            </div>
 
               <div className="p-4 bg-[#1A2E05] text-white rounded-2xl text-center space-y-1 relative group mt-4">
                 <p className="text-[10px] font-bold text-[#84A63C]">Total Billing</p>
@@ -2928,6 +3814,7 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
                 </div>
               </div>
             </div>
+          )}
           </div>
         </div>
 
@@ -3096,7 +3983,7 @@ const AddGuestModal = ({ isOpen, onClose, onConfirm, initialData = null, preSele
   }
 
   return createPortal(
-    <div className={`guest-registry-modal-container fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in overflow-hidden ${isFullscreen ? '' : 'p-2 sm:p-3'}`}>
+    <div className={`guest-registry-modal-container fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in overflow-hidden ${isFullscreen ? '' : 'p-1 sm:p-2'}`}>
       {modalBody}
     </div>,
     document.body

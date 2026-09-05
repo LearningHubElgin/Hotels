@@ -349,7 +349,12 @@ export const renderTemplate1 = (doc, bill, hotelData, numberToWords) => {
         const cIn = new Date(checkInStr);
         const cOut = new Date(checkOutStr);
         const totalStayDays = Math.max(1, Math.ceil(Math.abs(cOut - cIn) / (1000 * 60 * 60 * 24)));
-        let shiftDateStr = roomBooking.shiftDate || (roomBooking.updatedAt ? roomBooking.updatedAt.split('T')[0] : '');
+        const rawShiftDates = roomBooking.shiftDate || (roomBooking.updatedAt ? roomBooking.updatedAt.split('T')[0] : '');
+        const shiftDatesList = String(rawShiftDates || '')
+          .split(/→|->|,|>/)
+          .map(s => s.trim().split('T')[0])
+          .filter(s => s && !isNaN(new Date(s).getTime()));
+        let shiftDateStr = shiftDatesList[0] || '';
         const todayStr = new Date().toISOString().split('T')[0];
 
         if (!shiftDateStr || shiftDateStr < checkInStr || shiftDateStr > checkOutStr) {
@@ -358,7 +363,7 @@ export const renderTemplate1 = (doc, bill, hotelData, numberToWords) => {
         }
 
         let prevDays = Math.max(1, Math.ceil(Math.abs(new Date(shiftDateStr) - cIn) / (1000 * 60 * 60 * 24)));
-        if (prevDays >= totalStayDays) prevDays = Math.max(1, totalStayDays - 1);
+        if (isNaN(prevDays) || prevDays >= totalStayDays) prevDays = Math.max(1, totalStayDays - 1);
         const curDays = Math.max(1, totalStayDays - prevDays);
 
         const prevRateVal = roomBooking.previousRoomRate !== undefined && roomBooking.previousRoomRate !== null
@@ -368,7 +373,7 @@ export const renderTemplate1 = (doc, bill, hotelData, numberToWords) => {
         const defaultPrevRate = prevRatesList.length > 0
           ? prevRatesList[0]
           : (roomBooking.Room?.pricePerNight ? Number(roomBooking.Room.pricePerNight) : (bill.Room?.pricePerNight ? Number(bill.Room.pricePerNight) : 0));
-        const curRate = roomBooking.Room?.pricePerNight ? Number(roomBooking.Room.pricePerNight) : defaultPrevRate;
+        const curRate = roomBooking.pricePerNight ? Number(roomBooking.pricePerNight) : (roomBooking.Room?.pricePerNight ? Number(roomBooking.Room.pricePerNight) : defaultPrevRate);
 
         if (roomBooking.totalAmount && !isNaN(Number(roomBooking.totalAmount)) && Number(roomBooking.totalAmount) > 0) {
           rBase = Number(roomBooking.totalAmount) - earlyDeduction;

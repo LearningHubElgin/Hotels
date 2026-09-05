@@ -5,6 +5,7 @@ import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { cleanRoomNumber } from '../utils/roomHelper';
 import { generatePaymentReceipt } from '../utils/paymentReceiptGenerator';
+import { getAutoPaymentSerialNo, getNextPaymentSerialNo } from '../utils/paymentSerialNumberGenerator';
 
 // Format a "HH:MM" 24-hr string to "HH:MM AM/PM"
 const formatTime12hr = (timeStr, fallback = '12:00 PM') => {
@@ -53,7 +54,7 @@ const convert12hrTo24hr = (time12) => {
   return `${hours.toString().padStart(2, '0')}:${minutes}`;
 };
 
-const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
+const QuickPayModal = ({ isOpen, onClose, bill, onSave, allBills = [] }) => {
   const { activeHotel } = useAuth();
   const isRowEditable = bill && (
     bill.status !== 'Completed' ||
@@ -88,10 +89,11 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
   const [activeTab, setActiveTab] = useState('total'); // 'total', 'room', 'extras'
   const [historyList, setHistoryList] = useState([]);
   const [pendingPopup, setPendingPopup] = useState(null); // null | { roomPending, extrasPending }
+  const [serialNoInput, setSerialNoInput] = useState('');
 
   // Inline edit state
   const [editingIdx, setEditingIdx] = useState(null);
-  const [editTxData, setEditTxData] = useState({ amount: '', date: '', time: '', paymentMode: 'Cash', paymentBank: '', paidFor: 'Room' });
+  const [editTxData, setEditTxData] = useState({ amount: '', date: '', time: '', paymentMode: 'Cash', paymentBank: '', paidFor: 'Room', serialNumber: '' });
 
   const banksList = activeHotel && activeHotel.onlinePaymentBanks
     ? activeHotel.onlinePaymentBanks.split(',').map(b => b.trim()).filter(Boolean)
@@ -116,6 +118,9 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
       setActiveTab('total');
       setEditingIdx(null);
 
+      const nextNum = getNextPaymentSerialNo(allBills);
+      setSerialNoInput(nextNum);
+
       const now = new Date();
       const yyyy = now.getFullYear();
       const mm = String(now.getMonth() + 1).padStart(2, '0');
@@ -126,7 +131,7 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
       const min = String(now.getMinutes()).padStart(2, '0');
       setPayTime(`${hh}:${min}`);
     }
-  }, [isOpen]);
+  }, [isOpen, allBills]);
 
   useEffect(() => {
     if (isOpen && bill) {
@@ -369,11 +374,15 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
     const pendingExtras = Math.max(0, extrasGrandTotal - totalPaidExtras);
     const totalPendingAll = pendingRoom + pendingExtras;
 
+    const assignedSerial = activeHotel?.enablePaymentSerialNumber
+      ? (String(serialNoInput || '').trim() || getNextPaymentSerialNo(allBills))
+      : undefined;
+
     let newEntries = [];
     if (activeTab === 'room') {
-      newEntries = [{ amount: amt, date: currentDate, time: currentTime, paymentMode: payMode, paymentBank: payMode === 'Online' ? payBank : null, paidFor: 'Room' }];
+      newEntries = [{ amount: amt, date: currentDate, time: currentTime, paymentMode: payMode, paymentBank: payMode === 'Online' ? payBank : null, paidFor: 'Room', serialNumber: assignedSerial }];
     } else if (activeTab === 'extras') {
-      newEntries = [{ amount: amt, date: currentDate, time: currentTime, paymentMode: payMode, paymentBank: payMode === 'Online' ? payBank : null, paidFor: 'Extras' }];
+      newEntries = [{ amount: amt, date: currentDate, time: currentTime, paymentMode: payMode, paymentBank: payMode === 'Online' ? payBank : null, paidFor: 'Extras', serialNumber: assignedSerial }];
     } else {
       // activeTab === 'total'
       // Automatically allocate: Room dues first, then Extras
@@ -382,15 +391,15 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
         const extrasShare = Math.max(0, amt - roomShare);
 
         if (roomShare > 0.01) {
-          newEntries.push({ amount: roomShare, date: currentDate, time: currentTime, paymentMode: payMode, paymentBank: payMode === 'Online' ? payBank : null, paidFor: 'Room' });
+          newEntries.push({ amount: roomShare, date: currentDate, time: currentTime, paymentMode: payMode, paymentBank: payMode === 'Online' ? payBank : null, paidFor: 'Room', serialNumber: assignedSerial });
         }
         if (extrasShare > 0.01) {
-          newEntries.push({ amount: extrasShare, date: currentDate, time: currentTime, paymentMode: payMode, paymentBank: payMode === 'Online' ? payBank : null, paidFor: 'Extras' });
+          newEntries.push({ amount: extrasShare, date: currentDate, time: currentTime, paymentMode: payMode, paymentBank: payMode === 'Online' ? payBank : null, paidFor: 'Extras', serialNumber: assignedSerial });
         }
       } else {
         // Fallback if only one has outstanding dues
         const targetPaidFor = (pendingExtras > 0.01 && pendingRoom <= 0.01) ? 'Extras' : 'Room';
-        newEntries = [{ amount: amt, date: currentDate, time: currentTime, paymentMode: payMode, paymentBank: payMode === 'Online' ? payBank : null, paidFor: targetPaidFor }];
+        newEntries = [{ amount: amt, date: currentDate, time: currentTime, paymentMode: payMode, paymentBank: payMode === 'Online' ? payBank : null, paidFor: targetPaidFor, serialNumber: assignedSerial }];
       }
     }
 
@@ -398,6 +407,9 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
     await saveAndUpdateHistory(updatedHistory);
     setPayAmount('');
     setPaidFor(activeTab === 'extras' ? 'Extras' : 'Room');
+    if (activeHotel?.enablePaymentSerialNumber) {
+      setSerialNoInput(getNextPaymentSerialNo(allBills));
+    }
 
     // After payment: compute new pending amounts and show popup if any pending
     const newTotalPaidAll = updatedHistory.reduce((s, h) => s + Number(h.amount || 0), 0);
@@ -422,7 +434,8 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
       time: convert12hrTo24hr(tx.time),
       paymentMode: tx.paymentMode || 'Cash',
       paymentBank: tx.paymentBank || '',
-      paidFor: tx.paidFor || 'Room'
+      paidFor: tx.paidFor || 'Room',
+      serialNumber: tx.serialNumber || getAutoPaymentSerialNo(tx, idx, bill, allBills)
     });
   };
 
@@ -440,7 +453,8 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
       time: formatTime12hr(editTxData.time), // converts HH:MM -> HH:MM AM/PM
       paymentMode: editTxData.paymentMode,
       paymentBank: editTxData.paymentMode === 'Online' ? editTxData.paymentBank : null,
-      paidFor: editTxData.paidFor || 'Room'
+      paidFor: editTxData.paidFor || 'Room',
+      serialNumber: editTxData.serialNumber ? String(editTxData.serialNumber).trim() : updated[idx].serialNumber
     };
     await saveAndUpdateHistory(updated);
     setEditingIdx(null);
@@ -748,6 +762,22 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
                 </div>
               </div>
 
+              {activeHotel?.enablePaymentSerialNumber === true && (
+                <div>
+                  <label className="text-[9px] sm:text-[10px] font-black text-[#4A5E38] uppercase tracking-wider block mb-1">
+                    Payment Serial Number
+                  </label>
+                  <input
+                    type="text"
+                    value={serialNoInput}
+                    onChange={(e) => setSerialNoInput(e.target.value)}
+                    disabled={!isRowEditable}
+                    placeholder="e.g. 1"
+                    className="w-full px-3.5 py-2 bg-[#F5F7F0] border border-[#DDE5D0] rounded-xl text-xs sm:text-sm font-black text-[#1A2E05] focus:outline-none focus:bg-white focus:border-[#84A63C] transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                  />
+                </div>
+              )}
+
               <button
                 type="button"
                 disabled={!isRowEditable}
@@ -865,21 +895,49 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
                               <option value="Extras">Extras / Services</option>
                             </select>
                           </div>
-                          {editTxData.paymentMode === 'Online' && banksList.length > 0 && (
+                          {activeHotel?.enablePaymentSerialNumber === true ? (
                             <div>
-                              <label className="text-[8px] font-black text-[#4A5E38] uppercase block mb-0.5">Bank / Wallet</label>
-                              <select
-                                value={editTxData.paymentBank || ''}
-                                onChange={(e) => setEditTxData(prev => ({ ...prev, paymentBank: e.target.value }))}
+                              <label className="text-[8px] font-black text-[#4A5E38] uppercase block mb-0.5">Serial No.</label>
+                              <input
+                                type="text"
+                                value={editTxData.serialNumber || ''}
+                                onChange={(e) => setEditTxData(prev => ({ ...prev, serialNumber: e.target.value }))}
+                                placeholder="1"
                                 className="w-full px-2.5 py-1.5 bg-[#F5F7F0] border border-[#DDE5D0] rounded-xl text-xs font-bold"
-                              >
-                                {banksList.map(b => (
-                                  <option key={b} value={b}>{b}</option>
-                                ))}
-                              </select>
+                              />
                             </div>
+                          ) : (
+                            editTxData.paymentMode === 'Online' && banksList.length > 0 && (
+                              <div>
+                                <label className="text-[8px] font-black text-[#4A5E38] uppercase block mb-0.5">Bank / Wallet</label>
+                                <select
+                                  value={editTxData.paymentBank || ''}
+                                  onChange={(e) => setEditTxData(prev => ({ ...prev, paymentBank: e.target.value }))}
+                                  className="w-full px-2.5 py-1.5 bg-[#F5F7F0] border border-[#DDE5D0] rounded-xl text-xs font-bold"
+                                >
+                                  {banksList.map(b => (
+                                    <option key={b} value={b}>{b}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            )
                           )}
                         </div>
+
+                        {activeHotel?.enablePaymentSerialNumber === true && editTxData.paymentMode === 'Online' && banksList.length > 0 && (
+                          <div className="w-full">
+                            <label className="text-[8px] font-black text-[#4A5E38] uppercase block mb-0.5">Bank / Wallet</label>
+                            <select
+                              value={editTxData.paymentBank || ''}
+                              onChange={(e) => setEditTxData(prev => ({ ...prev, paymentBank: e.target.value }))}
+                              className="w-full px-2.5 py-1.5 bg-[#F5F7F0] border border-[#DDE5D0] rounded-xl text-xs font-bold"
+                            >
+                              {banksList.map(b => (
+                                <option key={b} value={b}>{b}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
 
                         <div className="flex gap-2 justify-end pt-1">
                           <button onClick={() => setEditingIdx(null)} className="px-3.5 py-1.5 text-xs font-bold text-[#7A8A6A] hover:bg-[#F0F3E8] rounded-xl border border-[#DDE5D0]">Cancel</button>
@@ -890,6 +948,11 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
                       <div className="flex flex-col gap-2 sm:flex-row sm:justify-between sm:items-center py-0.5">
                         <div>
                           <div className="flex flex-wrap items-center gap-2">
+                            {activeHotel?.enablePaymentSerialNumber === true && (
+                              <span className="text-[10px] font-black px-2 py-0.5 bg-[#EEF4E3] text-[#1A2E05] border border-[#D3E2BD] rounded-lg">
+                                #{item.serialNumber || getAutoPaymentSerialNo(item, idx, bill, allBills)}
+                              </span>
+                            )}
                             <span className="text-sm sm:text-base font-black text-[#1A2E05]">₹{Number(item.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                             <span className={`text-[9px] sm:text-[10px] font-extrabold px-2 py-0.5 rounded-full border ${item.paymentMode === 'Online' ? 'bg-blue-50 text-blue-700 border-blue-200' :
                                 item.paymentMode === 'Cash' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-purple-50 text-purple-700 border-purple-200'
@@ -916,8 +979,8 @@ const QuickPayModal = ({ isOpen, onClose, bill, onSave }) => {
                         </div>
 
                         <div className="flex gap-1 items-center justify-end border-t border-gray-100 sm:border-t-0 pt-1.5 sm:pt-0">
-                          <button onClick={() => generatePaymentReceipt(bill, item, true)} className="p-1.5 text-[#7A8A6A] hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all" title="Preview Receipt"><Eye size={14} /></button>
-                          <button onClick={() => generatePaymentReceipt(bill, item, false)} className="p-1.5 text-[#7A8A6A] hover:text-green-600 hover:bg-green-50 rounded-lg transition-all" title="Download Receipt"><Download size={14} /></button>
+                          <button onClick={() => generatePaymentReceipt(bill, { ...item, serialNumber: item.serialNumber || getAutoPaymentSerialNo(item, idx, bill, allBills) }, true)} className="p-1.5 text-[#7A8A6A] hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all" title="Preview Receipt"><Eye size={14} /></button>
+                          <button onClick={() => generatePaymentReceipt(bill, { ...item, serialNumber: item.serialNumber || getAutoPaymentSerialNo(item, idx, bill, allBills) }, false)} className="p-1.5 text-[#7A8A6A] hover:text-green-600 hover:bg-green-50 rounded-lg transition-all" title="Download Receipt"><Download size={14} /></button>
                           {canEditThisItem ? (
                             <>
                               <button onClick={() => startEditTx(idx, item)} className="p-1.5 text-[#7A8A6A] hover:text-[#84A63C] hover:bg-[#F0F3E8] rounded-lg transition-all" title="Edit"><Edit size={14} /></button>

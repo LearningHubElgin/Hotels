@@ -49,7 +49,8 @@ const SettingsPage = () => {
     hasRoomType: false,
     roomTypes: '',
     bookingPlatforms: '',
-    onlinePaymentBanks: ''
+    onlinePaymentBanks: '',
+    enableRegistrationNumber: false
   });
 
   useEffect(() => {
@@ -75,7 +76,8 @@ const SettingsPage = () => {
         bookingPlatforms: activeHotel.bookingPlatforms || '',
         onlinePaymentBanks: activeHotel.onlinePaymentBanks || '',
         enableAutoExtendCheckout: isTruthy(activeHotel.enableAutoExtendCheckout),
-        autoExtendCutoffTime: convertTo24Hour(activeHotel.autoExtendCutoffTime || '11:30 AM')
+        autoExtendCutoffTime: convertTo24Hour(activeHotel.autoExtendCutoffTime || '11:30 AM'),
+        enableRegistrationNumber: isTruthy(activeHotel.enableRegistrationNumber)
       });
     }
   }, [activeHotel]);
@@ -476,6 +478,30 @@ const SettingsPage = () => {
                 >
                   <span
                     className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform duration-200 ${formData.hasRoomType ? 'translate-x-6' : 'translate-x-1'
+                      }`}
+                  />
+                </button>
+              </div>
+            </div>
+
+            {/* Registration Number Privilege toggle */}
+            <div className="space-y-1 md:col-span-2">
+              <div className="flex items-center justify-between bg-[#F5F7F0] border border-[#DDE5D0] rounded-xl px-4 py-3">
+                <div className="flex-1 min-w-0 pr-4">
+                  <p className="text-xs font-bold text-[#1A2E05]">Guest Registration Numbers (Reg No)</p>
+                  <p className="text-[9px] text-[#7A8A6A] font-medium mt-0.5">
+                    Show auto-incrementing serial Registration Numbers (e.g. REG-001, REG-002) in the Guest Registry and reports.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={!isEditable}
+                  onClick={() => setFormData(prev => ({ ...prev, enableRegistrationNumber: !prev.enableRegistrationNumber }))}
+                  className={`relative flex-shrink-0 inline-flex h-6 w-11 items-center rounded-full transition-colors duration-200 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed ${formData.enableRegistrationNumber ? 'bg-[#84A63C]' : 'bg-[#DDE5D0]'
+                    }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform duration-200 ${formData.enableRegistrationNumber ? 'translate-x-6' : 'translate-x-1'
                       }`}
                   />
                 </button>

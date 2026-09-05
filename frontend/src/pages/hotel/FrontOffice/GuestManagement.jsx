@@ -12,6 +12,8 @@ import { generateBookingConfirmationVoucher } from '../../../utils/bookingConfir
 import { compressImage } from '../../../utils/imageCompressor';
 import { useLocation } from 'react-router-dom';
 import { cleanRoomNumber } from '../../../utils/roomHelper';
+import { useAuth } from '../../../context/AuthContext';
+import { getAutoRegNo } from '../../../utils/registrationNumberGenerator';
 import AddGuestModal from '../../../components/AddGuestModal';
 import CheckoutConfirmModal from '../../../components/CheckoutConfirmModal';
 import GuestDetailModal from '../../../components/GuestDetailModal';
@@ -76,6 +78,7 @@ const formatDateDMY = (dateStr) => {
 };
 
 const GuestManagement = () => {
+  const { activeHotel } = useAuth();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isViewModalOpen, setIsViewModalOpen] = useState(false);
   const [viewingGuest, setViewingGuest] = useState(null);
@@ -362,6 +365,9 @@ const GuestManagement = () => {
                 <thead>
                   <tr className="bg-[#F0F3E8]/50 border-b border-[#DDE5D0]">
                     <th className="px-6 py-5 text-[10px] font-bold text-[#4A5E38]">Room</th>
+                    {activeHotel?.enableRegistrationNumber === true && (
+                      <th className="px-6 py-5 text-[10px] font-bold text-[#4A5E38]">Reg. No.</th>
+                    )}
                     <th className="px-6 py-5 text-[10px] font-bold text-[#4A5E38]">Guest Details</th>
                     <th className="px-6 py-5 text-[10px] font-bold text-[#4A5E38]">Stay Period</th>
                     <th className="px-6 py-5 text-[10px] font-bold text-[#4A5E38]">Status</th>
@@ -390,6 +396,17 @@ const GuestManagement = () => {
                             <p className="text-[10px] font-bold text-[#4A5E38] max-w-[120px] truncate" title={typeDisplay}>{typeDisplay}</p>
                           </div>
                         </td>
+                        {activeHotel?.enableRegistrationNumber === true && (
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            {guest.status === 'Cancelled' ? (
+                              <span className="text-xs text-gray-400 font-bold">-</span>
+                            ) : (
+                              <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-[11px] font-black bg-[#EEF4E3] border border-[#D3E2BD] text-[#1A2E05] whitespace-nowrap shadow-2xs">
+                                {guest.registrationNumber || getAutoRegNo(guest, guests)}
+                              </span>
+                            )}
+                          </td>
+                        )}
                         <td className="px-6 py-4">
                           <h3 className="text-sm font-bold text-[#1A2E05]">{guest.guestName}</h3>
                           {/* <p className="text-[10px] font-bold text-[#4A5E38]">{guest.phone}</p> */}
@@ -439,7 +456,7 @@ const GuestManagement = () => {
                     )})
                   ) : (
                     <tr>
-                      <td colSpan="5" className="py-20 text-center text-[#4A5E38] font-bold text-[11px]">
+                      <td colSpan={activeHotel?.enableRegistrationNumber === true ? 6 : 5} className="py-20 text-center text-[#4A5E38] font-bold text-[11px]">
                         No active registrations found.
                       </td>
                     </tr>
@@ -483,6 +500,11 @@ const GuestManagement = () => {
                       <div>
                         <h3 className="text-sm font-bold text-[#1A2E05] leading-tight">{guest.guestName}</h3>
                         <p className="text-[10px] font-bold text-[#4A5E38] mt-0.5 max-w-[150px] truncate" title={typeDisplay}>{typeDisplay}</p>
+                        {activeHotel?.enableRegistrationNumber === true && (
+                          <p className="text-[10px] font-bold text-[#2C4012] bg-[#EEF4E3] px-1.5 py-0.5 rounded border border-[#D3E2BD] inline-block mt-1 font-mono">
+                            Reg: {guest.registrationNumber || getAutoRegNo(guest, guests)}
+                          </p>
+                        )}
                       </div>
                     </div>
                     <span className={`px-3 py-1 rounded-lg text-[10px] font-bold ${guest.status === 'Active' ? 'bg-green-50 text-green-600' : 'bg-blue-50 text-blue-600'}`}>

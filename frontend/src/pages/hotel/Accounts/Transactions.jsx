@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   Search, Filter, ArrowUpRight, ArrowDownRight,
   CreditCard, DollarSign, Loader2, Download,
-  Wallet, Globe, Layers, CalendarDays, CalendarRange, Building, ChevronDown, ChevronUp, X, Edit3, Lock
+  Wallet, Globe, Layers, CalendarDays, CalendarRange, Building, ChevronDown, ChevronUp, X, Edit3, Lock,
+  Plus, Landmark, Trash2
 } from 'lucide-react';
 import api from '../../../services/api';
 import { useAuth } from '../../../context/AuthContext';
@@ -22,14 +23,95 @@ const Transactions = () => {
   const [isOpeningModalOpen, setIsOpeningModalOpen] = useState(false);
   const [openingCashInput, setOpeningCashInput] = useState('');
   const [openingBankInput, setOpeningBankInput] = useState('');
+  const [bankBalancesState, setBankBalancesState] = useState({});
+  const [customBankName, setCustomBankName] = useState('');
+  const [showAddCustomBank, setShowAddCustomBank] = useState(false);
   const [savingOpening, setSavingOpening] = useState(false);
+
+  const configuredBanks = useMemo(() => {
+    const fromHotel = activeHotel?.onlinePaymentBanks
+      ? activeHotel.onlinePaymentBanks.split(',').map(b => b.trim()).filter(Boolean)
+      : ['Paytm', 'GPay', 'SBI', 'PhonePe', 'HDFC', 'ICICI'];
+    let fromStored = [];
+    try {
+      if (activeHotel?.bankOpeningBalances) {
+        const obj = typeof activeHotel.bankOpeningBalances === 'string' ? JSON.parse(activeHotel.bankOpeningBalances) : activeHotel.bankOpeningBalances;
+        fromStored = Object.keys(obj || {});
+      }
+    } catch (e) {
+      fromStored = [];
+    }
+    const set = new Set([...fromHotel, ...fromStored]);
+    return Array.from(set);
+  }, [activeHotel]);
+
+  const bankOpeningMap = useMemo(() => {
+    try {
+      if (!activeHotel?.bankOpeningBalances) return {};
+      if (typeof activeHotel.bankOpeningBalances === 'object') return activeHotel.bankOpeningBalances;
+      return JSON.parse(activeHotel.bankOpeningBalances);
+    } catch (e) {
+      return {};
+    }
+  }, [activeHotel]);
 
   useEffect(() => {
     if (activeHotel) {
       setOpeningCashInput(activeHotel.openingCashBalance !== undefined && activeHotel.openingCashBalance !== null ? String(activeHotel.openingCashBalance) : '0');
-      setOpeningBankInput(activeHotel.openingBankBalance !== undefined && activeHotel.openingBankBalance !== null ? String(activeHotel.openingBankBalance) : '0');
+
+      let parsedMap = {};
+      try {
+        if (activeHotel.bankOpeningBalances) {
+          parsedMap = typeof activeHotel.bankOpeningBalances === 'string' ? JSON.parse(activeHotel.bankOpeningBalances) : activeHotel.bankOpeningBalances;
+        }
+      } catch (e) {
+        parsedMap = {};
+      }
+
+      const initialMap = { ...parsedMap };
+      configuredBanks.forEach(b => {
+        if (initialMap[b] === undefined || initialMap[b] === null) {
+          initialMap[b] = '';
+        } else {
+          initialMap[b] = String(initialMap[b]);
+        }
+      });
+      setBankBalancesState(initialMap);
+
+      let totalB = 0;
+      Object.values(initialMap).forEach(v => {
+        const n = parseFloat(v) || 0;
+        totalB += n;
+      });
+      if (totalB === 0 && activeHotel.openingBankBalance) {
+        totalB = Number(activeHotel.openingBankBalance);
+      }
+      setOpeningBankInput(String(totalB));
     }
-  }, [activeHotel]);
+  }, [activeHotel, configuredBanks, isOpeningModalOpen]);
+
+  const handleBankBalanceChange = (bankName, val) => {
+    setBankBalancesState(prev => {
+      const updated = { ...prev, [bankName]: val };
+      let sum = 0;
+      Object.values(updated).forEach(v => {
+        sum += (parseFloat(v) || 0);
+      });
+      setOpeningBankInput(String(sum));
+      return updated;
+    });
+  };
+
+  const handleAddCustomBank = () => {
+    const trimmed = (customBankName || '').trim();
+    if (!trimmed) return;
+    setBankBalancesState(prev => ({
+      ...prev,
+      [trimmed]: ''
+    }));
+    setCustomBankName('');
+    setShowAddCustomBank(false);
+  };
 
   const hasOpeningBalance = activeHotel?.hasOpeningBalance !== false;
   const isOpeningBalanceLocked = activeHotel?.lockOpeningBalance === true;
@@ -40,9 +122,23 @@ const Transactions = () => {
   const saveOpeningBalances = async () => {
     try {
       setSavingOpening(true);
+      let sumBank = 0;
+      const cleanBankMap = {};
+      Object.entries(bankBalancesState).forEach(([bank, val]) => {
+        const num = parseFloat(val) || 0;
+        if (num > 0 || val !== '') {
+          cleanBankMap[bank] = num;
+        }
+        sumBank += num;
+      });
+      if (sumBank === 0 && parseFloat(openingBankInput) > 0) {
+        sumBank = parseFloat(openingBankInput);
+      }
+
       const res = await api.put(`/hotels/${activeHotel.id}`, {
         openingCashBalance: Number(openingCashInput || 0),
-        openingBankBalance: Number(openingBankInput || 0)
+        openingBankBalance: sumBank,
+        bankOpeningBalances: JSON.stringify(cleanBankMap)
       });
       if (res.data?.success) {
         if (refreshHotel) {
@@ -248,9 +344,11 @@ const Transactions = () => {
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       result = result.filter(t =>
-        t.description.toLowerCase().includes(q) ||
-        t.source.toLowerCase().includes(q) ||
-        t.paymentMode.toLowerCase().includes(q)
+        (t.description && t.description.toLowerCase().includes(q)) ||
+        (t.source && t.source.toLowerCase().includes(q)) ||
+        (t.paymentMode && t.paymentMode.toLowerCase().includes(q)) ||
+        (t.serialNumber && String(t.serialNumber).toLowerCase().includes(q)) ||
+        (t.invoiceNumber && String(t.invoiceNumber).toLowerCase().includes(q))
       );
     }
 
@@ -329,15 +427,23 @@ const Transactions = () => {
   const tabLabel = activeTab === 'online' ? 'Online' : activeTab === 'card' ? 'Card' : activeTab === 'cash' ? 'Cash' : 'All';
 
   const handleExport = () => {
-    const headers = ['Date', 'Type', 'Source', 'Description', 'Payment Mode', 'Amount (Rs)'];
-    const rows = filteredTransactions.map(t => [
-      t.date,
-      t.type,
-      t.source,
-      t.description,
-      t.paymentMode,
-      t.type === 'Expense' ? -t.amount : t.amount
-    ]);
+    const showSerial = activeHotel?.enablePaymentSerialNumber === true;
+    const headers = [
+      ...(showSerial ? ['Serial No'] : []),
+      'Date', 'Type', 'Source', 'Description', 'Payment Mode', 'Amount (Rs)'
+    ];
+    const rows = filteredTransactions.map(t => {
+      const row = [
+        ...(showSerial ? [t.serialNumber ? `"${t.serialNumber}"` : '""'] : []),
+        t.date,
+        t.type,
+        t.source,
+        `"${(t.description || '').replace(/"/g, '""')}"`,
+        t.paymentMode,
+        t.type === 'Expense' ? -t.amount : t.amount
+      ];
+      return row;
+    });
 
     const csvContent = "data:text/csv;charset=utf-8,"
       + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
@@ -653,17 +759,23 @@ const Transactions = () => {
           </button>
           {Object.entries(bankWiseTxMap).sort(([a], [b]) => a.localeCompare(b)).map(([bank, txList]) => {
             const total = txList.reduce((s, t) => s + t.amount, 0);
+            const bOpen = Number(bankOpeningMap[bank] || 0);
             return (
               <button
                 key={bank}
                 onClick={() => setSelectedBankTab(bank)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all duration-300 flex items-center gap-1.5 ${
                   selectedBankTab === bank
                     ? 'bg-blue-600 text-white shadow-md'
                     : 'bg-white text-[#4A5E38] border border-[#DDE5D0] hover:bg-[#EAF0DE]'
                 }`}
               >
-                {bank} (₹{total.toLocaleString(undefined, { minimumFractionDigits: 2 })})
+                <span>{bank} (₹{total.toLocaleString(undefined, { minimumFractionDigits: 2 })})</span>
+                {bOpen > 0 && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${selectedBankTab === bank ? 'bg-white/20 text-white' : 'bg-blue-50 text-blue-700'}`}>
+                    Open: ₹{bOpen.toLocaleString()}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -694,9 +806,22 @@ const Transactions = () => {
 
         <div className="col-span-2 md:col-span-1 bg-white p-2.5 sm:p-4 rounded-xl border border-[#DDE5D0] shadow-sm flex items-center justify-between">
           <div className="space-y-0.5 min-w-0">
-            <span className="text-[9.5px] sm:text-xs font-bold text-[#7A8A6A] block truncate">{tabLabel} Net Balance</span>
+            <span className="text-[9.5px] sm:text-xs font-bold text-[#7A8A6A] block truncate">
+              {activeTab === 'online' && selectedBankTab !== 'All' ? `${selectedBankTab} Balance` : `${tabLabel} Net Balance`}
+            </span>
             {(() => {
-              const curOpening = activeTab === 'cash' ? openingCash : activeTab === 'online' ? openingBank : openingTotal;
+              let curOpening = 0;
+              if (activeTab === 'cash') {
+                curOpening = openingCash;
+              } else if (activeTab === 'online') {
+                if (selectedBankTab !== 'All') {
+                  curOpening = Number(bankOpeningMap[selectedBankTab] || 0);
+                } else {
+                  curOpening = openingBank;
+                }
+              } else {
+                curOpening = openingTotal;
+              }
               const grandNet = curOpening + netBalance;
               return (
                 <div>
@@ -799,6 +924,9 @@ const Transactions = () => {
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-[#F5F7F0] border-b border-[#DDE5D0] text-[#4A5E38] text-xs sm:text-sm font-extrabold uppercase tracking-wider select-none">
+                  {activeHotel?.enablePaymentSerialNumber === true && (
+                    <th className="px-4 py-3">Serial No.</th>
+                  )}
                   <th className="px-4 py-3">Date</th>
                   <th className="px-4 py-3">Type</th>
                   <th className="px-4 py-3">Source</th>
@@ -813,6 +941,17 @@ const Transactions = () => {
                   const modeLower = (tx.paymentMode || '').toLowerCase();
                   return (
                     <tr key={tx.id} className="hover:bg-[#F5F7F0]/30 transition-colors">
+                      {activeHotel?.enablePaymentSerialNumber === true && (
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          {tx.serialNumber ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-black bg-[#EEF4E3] border border-[#D3E2BD] text-[#1A2E05]">
+                              #{tx.serialNumber}
+                            </span>
+                          ) : (
+                            <span className="text-[#7A8A6A] text-xs font-semibold">—</span>
+                          )}
+                        </td>
+                      )}
                       <td className="px-4 py-3 whitespace-nowrap">
                         <div className="text-[#4A5E38] font-black">{tx.date.split('-').reverse().join('-')}</div>
                         {tx.time && (
@@ -911,16 +1050,19 @@ const Transactions = () => {
       {/* Opening Balance Setup Modal */}
       {isOpeningModalOpen && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-xl border border-[#DDE5D0] w-full max-w-md overflow-hidden animate-slide-up">
-            <div className="py-3.5 px-5 border-b border-[#DDE5D0] flex items-center justify-between bg-[#F5F7F0]">
+          <div className="bg-white rounded-2xl shadow-2xl border border-[#DDE5D0] w-full max-w-lg overflow-hidden animate-slide-up flex flex-col max-h-[90vh]">
+            <div className="py-3.5 px-5 border-b border-[#DDE5D0] flex items-center justify-between bg-[#F5F7F0] shrink-0">
               <div className="flex items-center gap-2">
                 <Wallet className="text-[#84A63C]" size={18} />
-                <h3 className="text-sm font-bold text-[#1A2E05]">Set Opening Balances</h3>
+                <div>
+                  <h3 className="text-sm font-bold text-[#1A2E05]">Set Opening Balances</h3>
+                  <p className="text-[11px] text-[#7A8A6A] font-semibold">Specify starting balances for cash drawer and individual bank/UPI accounts.</p>
+                </div>
               </div>
               <button onClick={() => setIsOpeningModalOpen(false)} className="text-[#7A8A6A] hover:text-[#1A2E05] transition-colors p-1"><X size={18} /></button>
             </div>
 
-            <div className="p-5 space-y-4">
+            <div className="p-5 space-y-4 overflow-y-auto">
               {isOpeningBalanceLocked && (
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center gap-2.5 text-amber-800 text-xs font-bold">
                   <Lock size={16} className="text-amber-600 shrink-0" />
@@ -928,43 +1070,144 @@ const Transactions = () => {
                 </div>
               )}
 
-              <div>
-                <label className="text-xs font-black text-[#4A5E38] uppercase tracking-wider block mb-1">Cash Opening Balance (₹)</label>
-                <input
-                  type="number"
-                  step="any"
-                  disabled={isOpeningBalanceLocked}
-                  value={openingCashInput}
-                  onChange={(e) => setOpeningCashInput(e.target.value)}
-                  className={`w-full px-3 py-2 border rounded-xl text-sm font-bold focus:outline-none ${
-                    isOpeningBalanceLocked
-                      ? 'bg-[#F5F7F0] text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
-                      : 'bg-white border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
-                  }`}
-                  placeholder="0.00"
-                />
-                <span className="text-[10px] text-[#7A8A6A] font-semibold mt-0.5 block">Starting cash in register / till drawer</span>
+              {/* Cash Section */}
+              <div className="bg-[#F0F3E8]/50 p-3.5 rounded-xl border border-[#DDE5D0]">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Wallet size={15} className="text-amber-600" />
+                  <label className="text-xs font-black text-[#4A5E38] uppercase tracking-wider">Cash Opening Balance (₹)</label>
+                </div>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-black text-[#7A8A6A]">₹</span>
+                  <input
+                    type="number"
+                    step="any"
+                    disabled={isOpeningBalanceLocked}
+                    value={openingCashInput}
+                    onChange={(e) => setOpeningCashInput(e.target.value)}
+                    className={`w-full pl-7 pr-3 py-2 border rounded-xl text-sm font-bold focus:outline-none ${
+                      isOpeningBalanceLocked
+                        ? 'bg-[#F5F7F0] text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
+                        : 'bg-white border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
+                    }`}
+                    placeholder="0.00"
+                  />
+                </div>
+                <span className="text-[10px] text-[#7A8A6A] font-semibold mt-1 block">Starting cash in till / register drawer</span>
               </div>
 
-              <div>
-                <label className="text-xs font-black text-[#4A5E38] uppercase tracking-wider block mb-1">Bank / Online Opening Balance (₹)</label>
-                <input
-                  type="number"
-                  step="any"
-                  disabled={isOpeningBalanceLocked}
-                  value={openingBankInput}
-                  onChange={(e) => setOpeningBankInput(e.target.value)}
-                  className={`w-full px-3 py-2 border rounded-xl text-sm font-bold focus:outline-none ${
-                    isOpeningBalanceLocked
-                      ? 'bg-[#F5F7F0] text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
-                      : 'bg-white border-[#DDE5D0] text-[#1A2E05] focus:border-[#84A63C]'
-                  }`}
-                  placeholder="0.00"
-                />
-                <span className="text-[10px] text-[#7A8A6A] font-semibold mt-0.5 block">Starting total bank account balance</span>
+              {/* Bank Accounts Section */}
+              <div className="bg-blue-50/40 p-3.5 rounded-xl border border-blue-100 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Landmark size={15} className="text-blue-600" />
+                    <span className="text-xs font-black text-blue-950 uppercase tracking-wider">Bank & Online Accounts</span>
+                  </div>
+                  <span className="text-xs font-extrabold text-blue-800 bg-blue-100/80 px-2 py-0.5 rounded-md border border-blue-200">
+                    Total Bank: ₹{Number(openingBankInput || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+
+                <div className="space-y-2.5">
+                  {Object.keys(bankBalancesState).length === 0 ? (
+                    <p className="text-xs text-gray-500 italic py-2 text-center">No online payment banks configured.</p>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {Object.entries(bankBalancesState).map(([bank, val]) => (
+                        <div key={bank} className="bg-white p-2.5 rounded-lg border border-[#DDE5D0] space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-extrabold text-[#1A2E05] truncate">{bank}</span>
+                            {!configuredBanks.includes(bank) && !isOpeningBalanceLocked && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setBankBalancesState(prev => {
+                                    const copy = { ...prev };
+                                    delete copy[bank];
+                                    let sum = 0;
+                                    Object.values(copy).forEach(v => { sum += (parseFloat(v) || 0); });
+                                    setOpeningBankInput(String(sum));
+                                    return copy;
+                                  });
+                                }}
+                                className="text-rose-400 hover:text-rose-600 p-0.5"
+                                title="Remove bank"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            )}
+                          </div>
+                          <div className="relative">
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-black text-[#7A8A6A]">₹</span>
+                            <input
+                              type="number"
+                              step="any"
+                              disabled={isOpeningBalanceLocked}
+                              value={val}
+                              onChange={(e) => handleBankBalanceChange(bank, e.target.value)}
+                              className={`w-full pl-6 pr-2.5 py-1.5 border rounded-lg text-xs font-bold focus:outline-none ${
+                                isOpeningBalanceLocked
+                                  ? 'bg-[#F5F7F0] text-[#7A8A6A] border-[#DDE5D0] cursor-not-allowed'
+                                  : 'bg-white border-[#DDE5D0] text-[#1A2E05] focus:border-blue-500'
+                              }`}
+                              placeholder="0.00"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {!isOpeningBalanceLocked && (
+                    <div className="pt-1">
+                      {showAddCustomBank ? (
+                        <div className="flex items-center gap-1.5 bg-white p-2 rounded-lg border border-blue-200">
+                          <input
+                            type="text"
+                            value={customBankName}
+                            onChange={(e) => setCustomBankName(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddCustomBank(); } }}
+                            placeholder="e.g. Bank of Baroda, Axis, Razorpay"
+                            className="flex-1 px-2.5 py-1 text-xs border rounded-md font-bold focus:outline-none focus:border-blue-500"
+                            autoFocus
+                          />
+                          <button
+                            type="button"
+                            onClick={handleAddCustomBank}
+                            className="px-2.5 py-1 bg-blue-600 text-white rounded-md text-xs font-bold hover:bg-blue-700 transition-colors"
+                          >
+                            Add
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setShowAddCustomBank(false); setCustomBankName(''); }}
+                            className="px-2 py-1 text-gray-500 hover:text-gray-700 text-xs font-bold"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setShowAddCustomBank(true)}
+                          className="flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline pt-0.5"
+                        >
+                          <Plus size={13} /> Add another bank / account
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-2 border-t border-[#DDE5D0]/60">
+              {/* Grand Total Preview */}
+              <div className="bg-[#F5F7F0] p-3 rounded-xl border border-[#DDE5D0] flex items-center justify-between text-xs">
+                <span className="font-bold text-[#4A5E38]">Combined Total Opening Balance:</span>
+                <span className="font-black text-sm text-[#1A2E05]">
+                  ₹{(Number(openingCashInput || 0) + Number(openingBankInput || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </span>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-[#DDE5D0]/60 shrink-0">
                 <button
                   type="button"
                   onClick={() => setIsOpeningModalOpen(false)}

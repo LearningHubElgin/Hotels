@@ -59,8 +59,16 @@ const getNextDayString = (dateStr) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
-const processAutoExtendOverdueCheckouts = async () => {
+let lastAutoExtendCheck = 0;
+
+const processAutoExtendOverdueCheckouts = async (force = false) => {
   try {
+    const now = Date.now();
+    if (!force && (now - lastAutoExtendCheck < 5 * 60 * 1000)) {
+      return; // Run at most once every 5 minutes
+    }
+    lastAutoExtendCheck = now;
+
     if (!Booking.associations || !Booking.associations.Room) {
       Booking.belongsTo(Room, { foreignKey: 'roomId' });
     }
@@ -97,17 +105,17 @@ const processAutoExtendOverdueCheckouts = async () => {
           const currentTotalAmount = Number(booking.totalAmount || 0);
           const newNights = currentNights + 1;
 
-          const roomFullPrice = Number(booking.Room?.pricePerNight || 0);
-          const gstOption = booking.gstOption || 'none';
-          const gstRate = Number(booking.gstRate || 0);
-
-          let perNightRate = roomFullPrice;
-          if (currentNights > 0 && currentTotalAmount > 0) {
-            perNightRate = currentTotalAmount / currentNights;
-          }
+          const roomNightRate = Number(
+            (booking.pricePerNight !== undefined && booking.pricePerNight !== null && Number(booking.pricePerNight) > 0)
+              ? booking.pricePerNight
+              : (booking.Room?.pricePerNight || 0)
+          );
+          const perNightRate = roomNightRate > 0
+            ? roomNightRate
+            : (currentNights > 0 ? (currentTotalAmount / currentNights) : 0);
 
           const nextCheckOutDate = getNextDayString(booking.checkOutDate);
-          const updatedTotal = Math.round((perNightRate * newNights) * 100) / 100;
+          const updatedTotal = Math.round((currentTotalAmount + perNightRate) * 100) / 100;
 
           await booking.update({
             checkOutDate: nextCheckOutDate,

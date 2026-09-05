@@ -17,6 +17,45 @@ const formatTime12hr = (timeStr) => {
   }
 };
 
+const formatDateDMY = (dateVal) => {
+  if (!dateVal) return '';
+  const dStr = String(dateVal).trim();
+  if (dStr.includes('T')) {
+    const datePart = dStr.split('T')[0];
+    const parts = datePart.split('-');
+    if (parts.length === 3) {
+      if (parts[0].length === 4) {
+        return `${parts[2].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[0]}`;
+      }
+      return `${parts[0].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[2]}`;
+    }
+  }
+  if (dStr.includes('/')) {
+    const parts = dStr.split('/');
+    if (parts.length === 3) {
+      if (parts[0].length === 4) {
+        return `${parts[2].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[0]}`;
+      }
+      return `${parts[0].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[2]}`;
+    }
+  }
+  if (dStr.includes('-')) {
+    const parts = dStr.split('-');
+    if (parts.length === 3) {
+      if (parts[0].length === 4) {
+        return `${parts[2].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[0]}`;
+      }
+      return `${parts[0].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[2]}`;
+    }
+  }
+  const d = new Date(dateVal);
+  if (isNaN(d.getTime())) return String(dateVal);
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+};
+
 const splitRupeesPaise = (amount) => {
   const rounded = Math.round(Number(amount || 0) * 100) / 100;
   const rupees = Math.floor(rounded);
@@ -282,7 +321,8 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
   doc.setFontSize(9);
   doc.text("DATE :", invLabelX + 13.5, infoY + 8.5);
   doc.setFont(fontName, "normal");
-  const dateStr = new Date().toLocaleDateString('en-GB');
+  const rawBookingDate = bill.bookingDate || bill.checkInDate || bill.createdAt;
+  const dateStr = rawBookingDate ? formatDateDMY(rawBookingDate) : new Date().toLocaleDateString('en-GB');
   doc.text(dateStr, invLabelX + 28, infoY + 8.5);
 
   // ============================================================
@@ -466,9 +506,40 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
   // 9. PARTICULARS TABLE (MANUALLY DRAWN FOR ACCURATE LOOK)
   // ============================================================
   const tableStartY = guestY + 2;
-  const tableHeight = 85; // Fixed height like the original screenshot
 
   // Calculation values
+  let effectiveHeaderCheckoutDate = bill.checkOutDate;
+  let effectiveHeaderCheckoutTime = bill.checkOutTime;
+  if (Array.isArray(bill.groupBookings) && bill.groupBookings.length > 0) {
+    const activeGbs = bill.groupBookings.filter(b => b.status !== 'Completed');
+    if (activeGbs.length > 0) {
+      const maxGb = activeGbs.reduce((max, b) => {
+        const bOut = b.checkOutDate ? b.checkOutDate.split('T')[0] : '';
+        const maxOut = max.checkOutDate ? max.checkOutDate.split('T')[0] : '';
+        return bOut > maxOut ? b : max;
+      }, activeGbs[0]);
+      effectiveHeaderCheckoutDate = maxGb.checkOutDate || bill.checkOutDate;
+      effectiveHeaderCheckoutTime = maxGb.checkOutTime || bill.checkOutTime;
+    }
+  }
+
+  const checkinDate = bill.checkInDate ? new Date(bill.checkInDate.split('T')[0]).toLocaleDateString('en-GB') : "N/A";
+  const checkoutDate = effectiveHeaderCheckoutDate ? new Date(effectiveHeaderCheckoutDate.split('T')[0]).toLocaleDateString('en-GB') : "N/A";
+  const checkinTime = bill.checkInTime ? formatTime12hr(bill.checkInTime).toUpperCase() : "12:00 PM";
+  const checkoutTime = effectiveHeaderCheckoutTime ? formatTime12hr(effectiveHeaderCheckoutTime).toUpperCase() : (hotelData.checkoutTime ? formatTime12hr(hotelData.checkoutTime).toUpperCase() : "11:00 AM");
+
+  // Calculate nights
+  let nights = 1;
+  if (bill.checkInDate && effectiveHeaderCheckoutDate) {
+    const d1 = new Date(bill.checkInDate.split('T')[0]);
+    const d2 = new Date(effectiveHeaderCheckoutDate.split('T')[0]);
+    nights = Math.max(1, Math.ceil(Math.abs(d2 - d1) / (1000 * 60 * 60 * 24)));
+  }
+  const isEarlyFullDay = !!(bill.chargePreviousDay && (bill.earlyCheckInType === 'full_day' || !bill.earlyCheckInCharge || Number(bill.earlyCheckInCharge) === 0));
+  if (isEarlyFullDay) {
+    nights += 1;
+  }
+
   const baseBookings = Array.isArray(bill.groupBookings) && bill.groupBookings.length > 0
     ? bill.groupBookings
     : [bill];
@@ -476,16 +547,191 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
     ...charge,
     isExtraCharge: true
   }));
-  const roomsList = [...baseBookings, ...extraChargesList];
 
   const gstRate = parseFloat(bill.gstRate !== undefined ? bill.gstRate : 5);
+  const gstOption = bill.gstOption || 'exclusive';
+
+  const expandedBaseBookings = [];
+  baseBookings.forEach((rb) => {
+    if (rb.previousRoomNumber) {
+      const inStr = rb.checkInDate ? String(rb.checkInDate).split('T')[0] : (bill.checkInDate ? String(bill.checkInDate).split('T')[0] : '');
+      const outStr = rb.checkOutDate ? String(rb.checkOutDate).split('T')[0] : (bill.checkOutDate ? String(bill.checkOutDate).split('T')[0] : '');
+      let totalStayDays = nights;
+      if (inStr && outStr) {
+        const d1 = new Date(inStr);
+        const d2 = new Date(outStr);
+        const diff = Math.max(1, Math.ceil(Math.abs(d2 - d1) / (1000 * 60 * 60 * 24)));
+        if (!isNaN(diff)) totalStayDays = diff;
+      }
+
+      const rawShiftDates = rb.shiftDate || bill.shiftDate || '';
+      const shiftDatesList = String(rawShiftDates || '')
+        .split(/→|->|,|>/)
+        .map(s => s.trim().split('T')[0])
+        .filter(s => s && !isNaN(new Date(s).getTime()));
+
+      const prevRooms = String(rb.previousRoomNumber || '')
+        .split(/→|->|,|>/)
+        .map(s => cleanRm(s.trim()))
+        .filter(Boolean);
+
+      const prevRateVal = rb.previousRoomRate !== undefined && rb.previousRoomRate !== null ? rb.previousRoomRate : bill.previousRoomRate;
+      const prevRatesList = String(prevRateVal || '').split(/→|->|,|>/).map(s => Number(s.trim())).filter(n => !isNaN(n));
+
+      const isShiftOnCheckout = shiftDatesList.length > 0 && shiftDatesList[0] >= outStr;
+
+      let rawCurRate = Number(rb.pricePerNight || bill.pricePerNight || rb.roomRate || bill.roomRate || 0);
+      const sameDayOptRaw = rb.sameDayChargeOption || bill.sameDayChargeOption || 'no_charge';
+      const sameDayOptList = String(sameDayOptRaw).split(/→|->|,|>/).map(s => s.trim());
+      let accumulatedDays = 0;
+      let prevTotalSum = 0;
+
+      prevRooms.forEach((pRm, idx) => {
+        const isFirst = idx === 0;
+        const isLast = idx === prevRooms.length - 1;
+        const stepSameDayOpt = sameDayOptList[idx] || sameDayOptList[0] || 'no_charge';
+
+        let rawRate = 0;
+        if (prevRatesList[idx] !== undefined && !isNaN(prevRatesList[idx])) {
+          rawRate = prevRatesList[idx];
+        } else if (prevRatesList[0] !== undefined && !isNaN(prevRatesList[0])) {
+          rawRate = prevRatesList[0];
+        } else {
+          rawRate = Number(rb.Room?.pricePerNight || bill.Room?.pricePerNight || 0);
+        }
+
+        let baseRate = rawRate;
+        if (gstOption === 'inclusive' && gstRate > 0) {
+          baseRate = Math.round((rawRate / (1 + gstRate / 100)) * 100) / 100;
+        }
+
+        const stepStart = isFirst ? inStr : (shiftDatesList[idx - 1] || shiftDatesList[0] || inStr);
+        const stepEnd = shiftDatesList[idx] || (isFirst ? (shiftDatesList[0] || inStr) : (shiftDatesList[idx - 1] || inStr));
+
+        let days = 0;
+        if (isShiftOnCheckout && isLast) {
+          // When shifted on or after checkout date, previous room had the entire stay
+          days = Math.max(1, totalStayDays - accumulatedDays);
+        } else {
+          if (stepEnd && stepStart && stepEnd > stepStart) {
+            days = Math.max(0, Math.ceil(Math.abs(new Date(stepEnd) - new Date(stepStart)) / (1000 * 60 * 60 * 24)));
+          } else if (shiftDatesList.length === 0) {
+            // Only fallback if there are no shift dates recorded at all
+            days = Math.max(1, Math.floor(totalStayDays / (prevRooms.length + 1)));
+          }
+          if (accumulatedDays + days > totalStayDays) {
+            days = Math.max(0, totalStayDays - accumulatedDays);
+          }
+        }
+        accumulatedDays += days;
+        prevTotalSum += (days * rawRate);
+
+        // Previous room segment - only add row if days > 0
+        if (days > 0) {
+          expandedBaseBookings.push({
+            ...rb,
+            isShiftSegment: true,
+            roomNumber: pRm,
+            Room: { roomNumber: pRm, pricePerNight: rawRate },
+            customNightlyRate: baseRate,
+            customStayNights: days,
+            totalAmount: days * rawRate,
+            discount: 0,
+            previousRoomNumber: null
+          });
+        }
+
+        // Shift day charge row if charged for previous room
+        if (stepSameDayOpt === 'charge_previous' && !isShiftOnCheckout) {
+          prevTotalSum += rawRate;
+          expandedBaseBookings.push({
+            ...rb,
+            isShiftSegment: true,
+            isShiftDayCharge: true,
+            roomNumber: pRm,
+            Room: { roomNumber: pRm, pricePerNight: rawRate },
+            customNightlyRate: baseRate,
+            customStayNights: 1,
+            totalAmount: rawRate,
+            discount: 0,
+            previousRoomNumber: null
+          });
+        }
+      });
+
+      // Current room segment
+      let curDays = 0;
+      let isDayStay = false;
+      const bTotalAmount = Number(rb.totalAmount || bill.totalAmount || 0);
+      const lastShiftDate = shiftDatesList[shiftDatesList.length - 1] || shiftDatesList[0] || inStr;
+
+      if (isShiftOnCheckout) {
+        const remAmount = bTotalAmount - prevTotalSum;
+        if (remAmount > 0) {
+          curDays = 1;
+          isDayStay = true;
+          if (!rawCurRate) {
+            rawCurRate = remAmount;
+          }
+        } else if (sameDayOptRaw.includes('charge_previous') || sameDayOptRaw.includes('charge_current')) {
+          curDays = 1;
+          isDayStay = true;
+        }
+      } else {
+        if (outStr && lastShiftDate && outStr > lastShiftDate) {
+          curDays = Math.ceil(Math.abs(new Date(outStr) - new Date(lastShiftDate)) / (1000 * 60 * 60 * 24));
+        } else {
+          curDays = Math.max(1, totalStayDays - accumulatedDays);
+        }
+      }
+
+      if (!rawCurRate) {
+        const remAmount = bTotalAmount - prevTotalSum;
+        if (remAmount > 0 && curDays > 0) {
+          rawCurRate = Math.round((remAmount / curDays) * 100) / 100;
+        } else {
+          rawCurRate = Number(rb.Room?.pricePerNight || bill.Room?.pricePerNight || 0);
+        }
+      }
+
+      if (curDays > 0) {
+        let curBaseRate = rawCurRate;
+        if (gstOption === 'inclusive' && gstRate > 0) {
+          curBaseRate = Math.round((rawCurRate / (1 + gstRate / 100)) * 100) / 100;
+        }
+        const cRm = cleanRm(rb.Room?.roomNumber || rb.roomNumber || '101');
+
+        let segTotalAmount = curDays * rawCurRate;
+        if (prevTotalSum === 0 && bTotalAmount > 0) {
+          segTotalAmount = bTotalAmount;
+        } else if (bTotalAmount > 0 && bTotalAmount >= prevTotalSum) {
+          segTotalAmount = bTotalAmount - prevTotalSum;
+        }
+
+        expandedBaseBookings.push({
+          ...rb,
+          isShiftSegment: true,
+          isDayStay,
+          roomNumber: cRm,
+          Room: { roomNumber: cRm, pricePerNight: rawCurRate },
+          customNightlyRate: curBaseRate,
+          customStayNights: curDays,
+          totalAmount: segTotalAmount,
+          discount: rb.discount || 0,
+          previousRoomNumber: null
+        });
+      }
+    } else {
+      expandedBaseBookings.push(rb);
+    }
+  });
+
+  const roomsList = [...expandedBaseBookings, ...extraChargesList];
   let grossBaseAmount = 0;
   let totalBaseAmount = 0;
   let totalDiscount = 0;
   let totalCgstAmount = 0;
   let totalSgstAmount = 0;
-
-  const gstOption = bill.gstOption || 'exclusive';
   const rawEarlyAmt = parseFloat(bill.earlyCheckInCharge || 0);
 
   let eSub = rawEarlyAmt;
@@ -558,45 +804,30 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
     totalSgstAmount += eGst / 2;
   }
 
-  const subTotal = totalBaseAmount;
+  const totalItemsCount = roomsList.length + (rawEarlyAmt > 0 ? 1 : 0);
+  const hasDiscount = totalDiscount > 0;
+  const hasGst = gstRate > 0 && gstOption !== 'none';
+
+  let rowCount = 4;
+  if (!hasGst) {
+    rowCount = hasDiscount ? 3 : 2;
+  } else {
+    rowCount = hasDiscount ? 6 : 4;
+  }
+
+  const rowHeight = rowCount >= 6 ? 4.8 : 5.5;
+  const totalsBoxHeight = rowCount * rowHeight;
+  const itemsHeightNeeded = 47 + (totalItemsCount * 5.5);
+  const tableHeight = Math.max(85, itemsHeightNeeded + totalsBoxHeight + 6);
+  const totalsBoxStartY = tableStartY + tableHeight - totalsBoxHeight;
+
+  const subTotal = Math.round(totalBaseAmount * 100) / 100;
   const cgstRate = gstRate / 2;
   const sgstRate = gstRate / 2;
-  const cgstAmount = totalCgstAmount;
-  const sgstAmount = totalSgstAmount;
-  const grandTotal = subTotal + cgstAmount + sgstAmount;
-
-  let effectiveHeaderCheckoutDate = bill.checkOutDate;
-  let effectiveHeaderCheckoutTime = bill.checkOutTime;
-  if (Array.isArray(bill.groupBookings) && bill.groupBookings.length > 0) {
-    const activeGbs = bill.groupBookings.filter(b => b.status !== 'Completed');
-    if (activeGbs.length > 0) {
-      const maxGb = activeGbs.reduce((max, b) => {
-        const bOut = b.checkOutDate ? b.checkOutDate.split('T')[0] : '';
-        const maxOut = max.checkOutDate ? max.checkOutDate.split('T')[0] : '';
-        return bOut > maxOut ? b : max;
-      }, activeGbs[0]);
-      effectiveHeaderCheckoutDate = maxGb.checkOutDate || bill.checkOutDate;
-      effectiveHeaderCheckoutTime = maxGb.checkOutTime || bill.checkOutTime;
-    }
-  }
-
-  const checkinDate = bill.checkInDate ? new Date(bill.checkInDate.split('T')[0]).toLocaleDateString('en-GB') : "N/A";
-  const checkoutDate = effectiveHeaderCheckoutDate ? new Date(effectiveHeaderCheckoutDate.split('T')[0]).toLocaleDateString('en-GB') : "N/A";
-  const checkinTime = bill.checkInTime ? formatTime12hr(bill.checkInTime).toUpperCase() : "12:00 PM";
-  const checkoutTime = effectiveHeaderCheckoutTime ? formatTime12hr(effectiveHeaderCheckoutTime).toUpperCase() : (hotelData.checkoutTime ? formatTime12hr(hotelData.checkoutTime).toUpperCase() : "11:00 AM");
-
-  // Calculate nights
-  let nights = 1;
-  if (bill.checkInDate && effectiveHeaderCheckoutDate) {
-    const d1 = new Date(bill.checkInDate.split('T')[0]);
-    const d2 = new Date(effectiveHeaderCheckoutDate.split('T')[0]);
-    nights = Math.max(1, Math.ceil(Math.abs(d2 - d1) / (1000 * 60 * 60 * 24)));
-  }
-  const isEarlyFullDay = !!(bill.chargePreviousDay && (bill.earlyCheckInType === 'full_day' || !bill.earlyCheckInCharge || Number(bill.earlyCheckInCharge) === 0));
-  if (isEarlyFullDay) {
-    nights += 1;
-  }
-
+  const totalTax = Math.round((totalCgstAmount + totalSgstAmount) * 100) / 100;
+  const cgstAmount = Math.round(totalCgstAmount * 100) / 100;
+  const sgstAmount = Math.round((totalTax - cgstAmount) * 100) / 100;
+  const grandTotal = Math.round((subTotal + totalTax) * 100) / 100;
   // Draw solid red header background
   doc.setFillColor(...redAccent);
   doc.rect(margin, tableStartY, pageWidth - 2 * margin, 7, 'F');
@@ -738,34 +969,50 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
         }
       }
       const curRmNum = cleanRm(rb.Room?.roomNumber || rb.roomNumber || '101');
-      const roomNum = rb.previousRoomNumber ? formatShiftChain(rb.previousRoomNumber, curRmNum) : curRmNum;
+      const roomNum = curRmNum;
 
-      let catalogRate = Number(rb.Room?.pricePerNight || rb.pricePerNight || bill.Room?.pricePerNight || bill.pricePerNight || 0);
-      if (gstOption === 'exclusive' && gstRate > 0 && catalogRate > 0 && Math.abs((catalogRate / (1 + gstRate / 100)) - Math.round(catalogRate / (1 + gstRate / 100))) < 0.05) {
-        catalogRate = Math.round(catalogRate / (1 + gstRate / 100));
-      }
-      if (catalogRate === 0) {
-        const possibleRates = [1000, 1200, 1500, 2000, 2500, 3000, 500, 800];
-        const found = possibleRates.find(pr => rSub > (roomNights * pr) - 0.5 && (rSub % pr === 0 || Math.abs((rSub / pr) - Math.round(rSub / pr)) < 0.05));
-        if (found) catalogRate = found;
-      }
-      let stayLabel = isSameDayStay ? `1 Day(s)` : `${roomNights} Night(s)`;
-      let effectiveRate = roomNights > 0 ? Math.round((rSub / roomNights) * 100) / 100 : rSub;
-
-      if (!isSameDayStay && catalogRate > 0 && rSub > (roomNights * catalogRate) - 0.5) {
-        const totalDays = Math.round(rSub / catalogRate);
-        const extraDays = totalDays - roomNights;
-        if (extraDays > 0) {
-          stayLabel = `${roomNights} Night(s) + ${extraDays} ${extraDays === 1 ? 'Day' : 'Days'}`;
-          effectiveRate = Math.round((rSub / totalDays) * 100) / 100;
+      if (rb.isShiftSegment) {
+        const effectiveRate = Number(rb.customNightlyRate || 0);
+        const formattedRate = effectiveRate % 1 === 0
+          ? effectiveRate.toLocaleString('en-IN')
+          : effectiveRate.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const stayNights = (rb.customStayNights && !isNaN(rb.customStayNights)) ? rb.customStayNights : 1;
+        if (rb.isShiftDayCharge) {
+          description = `Room ${roomNum}: Shift Day Charge @ Rs. ${formattedRate}`;
+        } else if (rb.isDayStay) {
+          description = `Room ${roomNum} - ${stayNights} Day(s) @ Rs. ${formattedRate}/night`;
+        } else {
+          description = `Room ${roomNum} - ${stayNights} Night(s) @ Rs. ${formattedRate}/night`;
         }
+      } else {
+        let catalogRate = Number(rb.Room?.pricePerNight || rb.pricePerNight || bill.Room?.pricePerNight || bill.pricePerNight || 0);
+        if (gstOption === 'exclusive' && gstRate > 0 && catalogRate > 0 && Math.abs((catalogRate / (1 + gstRate / 100)) - Math.round(catalogRate / (1 + gstRate / 100))) < 0.05) {
+          catalogRate = Math.round(catalogRate / (1 + gstRate / 100));
+        }
+        if (catalogRate === 0) {
+          const possibleRates = [1000, 1200, 1500, 2000, 2500, 3000, 500, 800];
+          const found = possibleRates.find(pr => rSub > (roomNights * pr) - 0.5 && (rSub % pr === 0 || Math.abs((rSub / pr) - Math.round(rSub / pr)) < 0.05));
+          if (found) catalogRate = found;
+        }
+
+        let stayLabel = isSameDayStay ? `1 Day(s)` : `${roomNights} Night(s)`;
+        let effectiveRate = roomNights > 0 ? Math.round((rSub / roomNights) * 100) / 100 : rSub;
+
+        if (!isSameDayStay && catalogRate > 0 && rSub > (roomNights * catalogRate) - 0.5) {
+          const totalDays = Math.round(rSub / catalogRate);
+          const extraDays = totalDays - roomNights;
+          if (extraDays > 0) {
+            stayLabel = `${roomNights} Night(s) + ${extraDays} ${extraDays === 1 ? 'Day' : 'Days'}`;
+            effectiveRate = Math.round((rSub / totalDays) * 100) / 100;
+          }
+        }
+
+        const formattedRate = effectiveRate % 1 === 0
+          ? effectiveRate.toLocaleString('en-IN')
+          : effectiveRate.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+        description = `Room ${roomNum} - ${stayLabel} @ Rs. ${formattedRate}/night`;
       }
-
-      const formattedRate = effectiveRate % 1 === 0
-        ? effectiveRate.toLocaleString('en-IN')
-        : effectiveRate.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-      description = `Room ${roomNum} - ${stayLabel} @ Rs. ${formattedRate}/night`;
     }
 
     const { rupees, paise } = splitRupeesPaise(rSub);
@@ -777,61 +1024,7 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
     // Sl No.
     doc.text((idx + 1).toString(), margin + 6, itemY, { align: "center" });
     // Particulars
-    if (!rb.isExtraCharge && rb.previousRoomNumber) {
-      const curRmNum = cleanRm(rb.Room?.roomNumber || rb.roomNumber || '101');
-      doc.setFont(fontName, "bold");
-      doc.setTextColor(...darkText);
-      doc.text("Room ", margin + 15, itemY);
-      let curX = margin + 15 + doc.getTextWidth("Room ");
-      const drawnW = drawShiftedRoomValue(cleanRm(rb.previousRoomNumber), curRmNum, curX, itemY);
-      curX += drawnW;
-      doc.setFont(fontName, "bold");
-      doc.setTextColor(...darkText);
-      let roomNights = nights;
-      let isSameDayStay = false;
-      if (rb.checkInDate && rb.checkOutDate) {
-        const d1Str = String(rb.checkInDate).split('T')[0];
-        const d2Str = String(rb.checkOutDate).split('T')[0];
-        if (d1Str === d2Str) {
-          isSameDayStay = true;
-          roomNights = 1;
-        } else {
-          const d1 = new Date(d1Str);
-          const d2 = new Date(d2Str);
-          const nDiff = Math.max(1, Math.ceil(Math.abs(d2 - d1) / (1000 * 60 * 60 * 24)));
-          if (!isNaN(nDiff)) {
-            roomNights = nDiff;
-          }
-        }
-      }
-      let catalogRate = Number(rb.Room?.pricePerNight || rb.pricePerNight || bill.Room?.pricePerNight || bill.pricePerNight || 0);
-      if (gstOption === 'exclusive' && gstRate > 0 && catalogRate > 0 && Math.abs((catalogRate / (1 + gstRate / 100)) - Math.round(catalogRate / (1 + gstRate / 100))) < 0.05) {
-        catalogRate = Math.round(catalogRate / (1 + gstRate / 100));
-      }
-      if (catalogRate === 0) {
-        const possibleRates = [1000, 1200, 1500, 2000, 2500, 3000, 500, 800];
-        const found = possibleRates.find(pr => rSub > (roomNights * pr) - 0.5 && (rSub % pr === 0 || Math.abs((rSub / pr) - Math.round(rSub / pr)) < 0.05));
-        if (found) catalogRate = found;
-      }
-      let stayLabel = isSameDayStay ? `1 Day(s)` : `${roomNights} Night(s)`;
-      let effectiveRate = roomNights > 0 ? Math.round((rSub / roomNights) * 100) / 100 : rSub;
-
-      if (!isSameDayStay && catalogRate > 0 && rSub > (roomNights * catalogRate) - 0.5) {
-        const totalDays = Math.round(rSub / catalogRate);
-        const extraDays = totalDays - roomNights;
-        if (extraDays > 0) {
-          stayLabel = `${roomNights} Night(s) + ${extraDays} ${extraDays === 1 ? 'Day' : 'Days'}`;
-          effectiveRate = Math.round((rSub / totalDays) * 100) / 100;
-        }
-      }
-
-      const formattedRate = effectiveRate % 1 === 0
-        ? effectiveRate.toLocaleString('en-IN')
-        : effectiveRate.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      doc.text(` - ${stayLabel} @ Rs. ${formattedRate}/night`, curX, itemY);
-    } else {
-      doc.text(description, margin + 15, itemY);
-    }
+    doc.text(description, margin + 15, itemY);
     // Rs and P
     doc.text(rupees.toString(), margin + 166, itemY, { align: "right" });
     doc.text(paise.toString().padStart(2, '0'), pageWidth - margin - 2, itemY, { align: "right" });
@@ -861,11 +1054,6 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
 
   // Draw the totals box at the bottom right
   const totalsBoxLeft = margin + 112;
-  const hasDiscount = totalDiscount > 0;
-  const rowCount = hasDiscount ? 5 : 4;
-  const rowHeight = 5.5;
-  const totalsBoxHeight = rowCount * rowHeight;
-  const totalsBoxStartY = tableStartY + tableHeight - totalsBoxHeight;
 
   // Horizontal border lines for the totals box
   doc.setDrawColor(...redAccent);
@@ -886,9 +1074,9 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
   const grandRP = splitRupeesPaise(grandTotal);
 
   doc.setFont(fontName, "bold");
-  doc.setFontSize(8);
+  doc.setFontSize(rowCount >= 6 ? 7.5 : 8);
 
-  let tRowY = totalsBoxStartY + 4.2;
+  let tRowY = totalsBoxStartY + (rowCount >= 6 ? 3.6 : 4.2);
 
   if (hasDiscount) {
     // 1. Total Amount Row (Gross before discount)
@@ -906,6 +1094,16 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
     doc.setTextColor(...darkText);
     doc.text(discRP.rupees.toString(), margin + 166, tRowY, { align: "right" });
     doc.text(discRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
+
+    if (hasGst) {
+      // 3. Taxable Amount Row (Net subtotal after discount)
+      tRowY += rowHeight;
+      doc.setTextColor(...redAccent);
+      doc.text("Taxable Amount", totalsBoxLeft + 2, tRowY);
+      doc.setTextColor(...darkText);
+      doc.text(subTotalRP.rupees.toString(), margin + 166, tRowY, { align: "right" });
+      doc.text(subTotalRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
+    }
   } else {
     // Total Amount Row (no discount)
     doc.setTextColor(...redAccent);
@@ -915,21 +1113,23 @@ export const renderTemplate4 = (doc, bill, hotelData, numberToWords) => {
     doc.text(subTotalRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
   }
 
-  // CGST Row
-  tRowY += rowHeight;
-  doc.setTextColor(...redAccent);
-  doc.text(`CGST......${cgstRate.toFixed(1)}%`, totalsBoxLeft + 2, tRowY);
-  doc.setTextColor(...darkText);
-  doc.text(cgstRP.rupees.toString(), margin + 166, tRowY, { align: "right" });
-  doc.text(cgstRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
+  if (hasGst) {
+    // CGST Row
+    tRowY += rowHeight;
+    doc.setTextColor(...redAccent);
+    doc.text(`CGST......${cgstRate.toFixed(1)}%`, totalsBoxLeft + 2, tRowY);
+    doc.setTextColor(...darkText);
+    doc.text(cgstRP.rupees.toString(), margin + 166, tRowY, { align: "right" });
+    doc.text(cgstRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
 
-  // SGST Row
-  tRowY += rowHeight;
-  doc.setTextColor(...redAccent);
-  doc.text(`SGST......${sgstRate.toFixed(1)}%`, totalsBoxLeft + 2, tRowY);
-  doc.setTextColor(...darkText);
-  doc.text(sgstRP.rupees.toString(), margin + 166, tRowY, { align: "right" });
-  doc.text(sgstRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
+    // SGST Row
+    tRowY += rowHeight;
+    doc.setTextColor(...redAccent);
+    doc.text(`SGST......${sgstRate.toFixed(1)}%`, totalsBoxLeft + 2, tRowY);
+    doc.setTextColor(...darkText);
+    doc.text(sgstRP.rupees.toString(), margin + 166, tRowY, { align: "right" });
+    doc.text(sgstRP.paise.toString().padStart(2, '0'), pageWidth - margin - 2, tRowY, { align: "right" });
+  }
 
   // GRAND TOTAL Row
   tRowY += rowHeight;

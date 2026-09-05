@@ -16,15 +16,17 @@ exports.getRooms = async (req, res, next) => {
     try {
       const Booking = require('../models/Booking');
       const activeBookings = await Booking.findAll({
-        where: { hotelId: req.user.hotelId, status: 'Active' }
+        where: { hotelId: req.user.hotelId, status: 'Active' },
+        attributes: ['id', 'roomId', 'guestName']
       });
-      for (const b of activeBookings) {
-        if (b.roomId) {
-          await Room.update(
+      const roomsToSync = activeBookings.filter(b => b.roomId);
+      if (roomsToSync.length > 0) {
+        await Promise.all(roomsToSync.map(b =>
+          Room.update(
             { status: 'occupied', guestName: b.guestName },
             { where: { id: b.roomId, hotelId: req.user.hotelId, status: 'available' } }
-          );
-        }
+          )
+        ));
       }
     } catch (e) {
       console.error('Error syncing room status in getRooms:', e.message);

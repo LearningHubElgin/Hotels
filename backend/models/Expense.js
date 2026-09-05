@@ -43,6 +43,10 @@ const Expense = sequelize.define('Expense', {
     type: DataTypes.STRING,
     allowNull: true
   },
+  serialNumber: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
   hotelId: {
     type: DataTypes.INTEGER,
     allowNull: true,

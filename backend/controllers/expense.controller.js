@@ -7,13 +7,32 @@ const { logActivity } = require('../utils/activityLogger');
 // @access  Private (Hotel User)
 exports.createExpense = async (req, res, next) => {
   try {
-    const { title, category, amount, date, description, paymentMode, paymentBank } = req.body;
+    const { title, category, amount, date, description, paymentMode, paymentBank, serialNumber } = req.body;
 
     if (!title || !category || !amount || !date) {
       return res.status(400).json({
         success: false,
         message: 'Please provide all required fields (title, category, amount, date)'
       });
+    }
+
+    let finalSerial = serialNumber ? String(serialNumber).trim() : null;
+    if (!finalSerial) {
+      const allExpenses = await Expense.findAll({
+        where: { hotelId: req.user.hotelId },
+        attributes: ['id', 'serialNumber']
+      });
+      let maxSeq = 0;
+      allExpenses.forEach(e => {
+        if (e.serialNumber) {
+          const match = String(e.serialNumber).match(/(\d+)$/);
+          if (match) {
+            const num = parseInt(match[1], 10);
+            if (num > maxSeq) maxSeq = num;
+          }
+        }
+      });
+      finalSerial = String(Math.max(maxSeq, allExpenses.length) + 1);
     }
 
     const expense = await Expense.create({
@@ -24,6 +43,7 @@ exports.createExpense = async (req, res, next) => {
       description,
       paymentMode: paymentMode || 'Cash',
       paymentBank: paymentMode === 'Online' ? paymentBank : null,
+      serialNumber: finalSerial,
       hotelId: req.user.hotelId
     });
 
@@ -94,7 +114,7 @@ exports.getExpenses = async (req, res, next) => {
 // @access  Private (Hotel User)
 exports.updateExpense = async (req, res, next) => {
   try {
-    const { title, category, amount, date, description, paymentMode, paymentBank } = req.body;
+    const { title, category, amount, date, description, paymentMode, paymentBank, serialNumber } = req.body;
 
     let expense = await Expense.findOne({
       where: { id: req.params.id, hotelId: req.user.hotelId }
@@ -115,7 +135,8 @@ exports.updateExpense = async (req, res, next) => {
       date,
       description,
       paymentMode: paymentMode || 'Cash',
-      paymentBank: paymentMode === 'Online' ? paymentBank : null
+      paymentBank: paymentMode === 'Online' ? paymentBank : null,
+      ...(serialNumber !== undefined ? { serialNumber: serialNumber ? String(serialNumber).trim() : null } : {})
     });
 
     await logActivity({

@@ -27,7 +27,7 @@ exports.getHotels = async (req, res, next) => {
 // @access  Private (SuperAdmin)
 exports.createHotel = async (req, res, next) => {
   try {
-    const { name, address, phone, email, logoUrl, gstin, city, state, hotelType, hasKot, hasAccounts, hasAssets, hasActivityLogs, hasOpeningBalance, openingCashBalance, openingBankBalance, lockOpeningBalance, hasRoomType, allowRoomAdd, allowRoomDelete, defaultGstRate, defaultGstOption, defaultHsnCode, billingTemplateId, allowHotelEdit, allowBillingEdit, allowPaymentEdit, checkoutTime, invoicePrefix, since, bookingPlatforms, onlinePaymentBanks, roomTypes } = req.body;
+    const { name, address, phone, email, logoUrl, gstin, city, state, hotelType, hasKot, hasAccounts, hasAssets, hasActivityLogs, hasOpeningBalance, openingCashBalance, openingBankBalance, bankOpeningBalances, lockOpeningBalance, hasRoomType, allowRoomAdd, allowRoomDelete, defaultGstRate, defaultGstOption, defaultHsnCode, billingTemplateId, allowHotelEdit, allowBillingEdit, allowPaymentEdit, checkoutTime, invoicePrefix, since, bookingPlatforms, onlinePaymentBanks, roomTypes } = req.body;
 
     if (!name) {
       res.status(400);
@@ -51,6 +51,7 @@ exports.createHotel = async (req, res, next) => {
       hasOpeningBalance: hasOpeningBalance !== undefined ? hasOpeningBalance : true,
       openingCashBalance: openingCashBalance !== undefined ? Number(openingCashBalance) : 0,
       openingBankBalance: openingBankBalance !== undefined ? Number(openingBankBalance) : 0,
+      bankOpeningBalances: typeof bankOpeningBalances === 'object' && bankOpeningBalances !== null ? JSON.stringify(bankOpeningBalances) : (bankOpeningBalances || null),
       lockOpeningBalance: lockOpeningBalance || false,
       hasRoomType: hasRoomType !== undefined ? hasRoomType : true,
       allowRoomAdd: allowRoomAdd !== undefined ? allowRoomAdd : true,
@@ -70,6 +71,8 @@ exports.createHotel = async (req, res, next) => {
       enablePerGuestRoomAssignment: req.body.enablePerGuestRoomAssignment === true,
       enableAutoExtendCheckout: req.body.enableAutoExtendCheckout === true,
       autoExtendCutoffTime: req.body.autoExtendCutoffTime || '11:30 AM',
+      enableRegistrationNumber: req.body.enableRegistrationNumber === true,
+      enablePaymentSerialNumber: req.body.enablePaymentSerialNumber === true,
       lockPastStayCharges: req.body.lockPastStayCharges === true,
       roomCardColors: req.body.roomCardColors || null
     });
@@ -119,12 +122,12 @@ exports.updateHotel = async (req, res, next) => {
         res.status(403);
         throw new Error('Not authorized to modify this hotel profile');
       }
-      const isUpdatingOpeningBalance = req.body.openingCashBalance !== undefined || req.body.openingBankBalance !== undefined;
+      const isUpdatingOpeningBalance = req.body.openingCashBalance !== undefined || req.body.openingBankBalance !== undefined || req.body.bankOpeningBalances !== undefined;
       if (isUpdatingOpeningBalance && hotel.lockOpeningBalance) {
         res.status(403);
         throw new Error('Opening balances are locked by SuperAdmin and cannot be modified.');
       }
-      const isOnlyOpeningBalanceUpdate = Object.keys(req.body).every(key => ['openingCashBalance', 'openingBankBalance'].includes(key));
+      const isOnlyOpeningBalanceUpdate = Object.keys(req.body).every(key => ['openingCashBalance', 'openingBankBalance', 'bankOpeningBalances'].includes(key));
       if (!hotel.allowHotelEdit && !isOnlyOpeningBalanceUpdate) {
         res.status(403);
         throw new Error('Hotel profile editing is disabled by the SuperAdmin. Please contact support.');
@@ -136,6 +139,10 @@ exports.updateHotel = async (req, res, next) => {
     const oldHotelData = hotel.toJSON();
     const hotelData = { ...req.body };
     delete hotelData.roomTypes;
+
+    if (hotelData.bankOpeningBalances !== undefined && typeof hotelData.bankOpeningBalances === 'object' && hotelData.bankOpeningBalances !== null) {
+      hotelData.bankOpeningBalances = JSON.stringify(hotelData.bankOpeningBalances);
+    }
 
     if (hotelData.enableAutoExtendCheckout !== undefined) {
       hotelData.enableAutoExtendCheckout = isTruthy(hotelData.enableAutoExtendCheckout);
@@ -166,6 +173,9 @@ exports.updateHotel = async (req, res, next) => {
     }
     if (hotelData.enableRegistrationNumber !== undefined) {
       hotelData.enableRegistrationNumber = isTruthy(hotelData.enableRegistrationNumber);
+    }
+    if (hotelData.enablePaymentSerialNumber !== undefined) {
+      hotelData.enablePaymentSerialNumber = isTruthy(hotelData.enablePaymentSerialNumber);
     }
 
     Object.assign(hotel, hotelData);

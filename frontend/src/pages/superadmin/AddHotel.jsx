@@ -1,12 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Building, Phone, Mail, MapPin, Loader2, AlertCircle, CheckCircle,
   ArrowLeft, Eye, EyeOff, Key, ShieldCheck, Receipt, Globe,
-  Wallet, Lock, Settings2, Sparkles, Layers, SlidersHorizontal
+  Wallet, Lock, Settings2, Sparkles, Layers, SlidersHorizontal,
+  Landmark, Plus, Trash2
 } from 'lucide-react';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { decodeId } from '../../utils/hashids';
 
 const isTruthy = (v) => v === true || v === 1 || v === '1' || v === 'true';
 
@@ -83,7 +85,8 @@ const ToggleCard = ({ label, description, checked, onChange, children }) => {
 };
 
 const AddHotel = () => {
-  const { id } = useParams();
+  const { id: rawId } = useParams();
+  const id = decodeId(rawId);
   const navigate = useNavigate();
   const { refreshHotel } = useAuth();
   const isEditMode = !!id;
@@ -105,6 +108,7 @@ const AddHotel = () => {
     hasOpeningBalance: true,
     openingCashBalance: 0,
     openingBankBalance: 0,
+    bankOpeningBalances: '',
     lockOpeningBalance: false,
     defaultGstRate: 12,
     defaultGstOption: 'none',
@@ -116,6 +120,7 @@ const AddHotel = () => {
     allowPaymentEdit: true,
     allowEditOldPayments: false,
     enableRegistrationNumber: false,
+    enablePaymentSerialNumber: false,
     allowRoomAdd: true,
     allowRoomDelete: true,
     checkoutTime: '11:00',
@@ -133,6 +138,10 @@ const AddHotel = () => {
     lockPastStayCharges: false,
     roomCardColors: ''
   });
+
+  const [bankBalancesState, setBankBalancesState] = useState({});
+  const [customBankName, setCustomBankName] = useState('');
+  const [showAddCustomBank, setShowAddCustomBank] = useState(false);
 
   const [templates, setTemplates] = useState([]);
   const [userForm, setUserForm] = useState({ username: '', password: '', role: 'admin' });
@@ -165,6 +174,33 @@ const AddHotel = () => {
         const hotelRes = await api.get(`/hotels/${id}`);
         if (hotelRes.data.success) {
           const h = hotelRes.data.data;
+
+          let parsedBankBalances = {};
+          try {
+            if (h.bankOpeningBalances) {
+              parsedBankBalances = typeof h.bankOpeningBalances === 'string'
+                ? JSON.parse(h.bankOpeningBalances)
+                : (h.bankOpeningBalances || {});
+            }
+          } catch (e) {
+            parsedBankBalances = {};
+          }
+
+          const hotelBanks = (h.onlinePaymentBanks || '')
+            .split(',')
+            .map(b => b.trim())
+            .filter(Boolean);
+          const storedBanks = Object.keys(parsedBankBalances || {});
+          const allBanks = Array.from(new Set([...hotelBanks, ...storedBanks]));
+
+          const initialBankMap = {};
+          allBanks.forEach(b => {
+            initialBankMap[b] = (parsedBankBalances[b] !== undefined && parsedBankBalances[b] !== null)
+              ? String(parsedBankBalances[b])
+              : '';
+          });
+          setBankBalancesState(initialBankMap);
+
           setHotelForm({
             name: h.name || '',
             address: h.address || '',
@@ -182,6 +218,7 @@ const AddHotel = () => {
             hasOpeningBalance: h.hasOpeningBalance !== false,
             openingCashBalance: h.openingCashBalance || 0,
             openingBankBalance: h.openingBankBalance || 0,
+            bankOpeningBalances: h.bankOpeningBalances ? (typeof h.bankOpeningBalances === 'object' ? JSON.stringify(h.bankOpeningBalances) : h.bankOpeningBalances) : '',
             lockOpeningBalance: isTruthy(h.lockOpeningBalance),
             defaultGstRate: h.defaultGstRate !== undefined ? h.defaultGstRate : 12,
             defaultGstOption: h.defaultGstOption || 'none',
@@ -208,6 +245,7 @@ const AddHotel = () => {
             autoExtendCutoffTime: convertTo24Hour(h.autoExtendCutoffTime || '11:30 AM'),
             lockPastStayCharges: isTruthy(h.lockPastStayCharges),
             enableRegistrationNumber: isTruthy(h.enableRegistrationNumber),
+            enablePaymentSerialNumber: isTruthy(h.enablePaymentSerialNumber),
             roomCardColors: h.roomCardColors || ''
           });
         }
@@ -254,6 +292,7 @@ const AddHotel = () => {
         hasOpeningBalance: true,
         openingCashBalance: 0,
         openingBankBalance: 0,
+        bankOpeningBalances: '',
         lockOpeningBalance: false,
         defaultGstRate: 12,
         defaultGstOption: 'none',
@@ -278,6 +317,7 @@ const AddHotel = () => {
         enableAutoExtendCheckout: false,
         autoExtendCutoffTime: '11:30'
       });
+      setBankBalancesState({});
       setUserForm({ username: '', password: '', role: 'admin' });
       setAdminUserId(null);
       setError('');
@@ -293,6 +333,125 @@ const AddHotel = () => {
   const handleUserChange = (e) => {
     const { name, value } = e.target;
     setUserForm(prev => ({ ...prev, [name]: value }));
+  };
+
+  const activeBankList = useMemo(() => {
+    const fromHotel = (hotelForm.onlinePaymentBanks || '')
+      .split(',')
+      .map(b => b.trim())
+      .filter(Boolean);
+    const fromState = Object.keys(bankBalancesState || {});
+    return Array.from(new Set([...fromHotel, ...fromState]));
+  }, [hotelForm.onlinePaymentBanks, bankBalancesState]);
+
+  const handleBankBalanceChange = (bankName, val) => {
+    setBankBalancesState(prev => {
+      const updated = { ...prev, [bankName]: val };
+      let sum = 0;
+      const cleanMap = {};
+      activeBankList.forEach(b => {
+        const bankVal = b === bankName ? val : (updated[b] !== undefined ? updated[b] : '');
+        const num = parseFloat(bankVal);
+        if (!isNaN(num) && num > 0) {
+          cleanMap[b] = num;
+          sum += num;
+        } else if (!isNaN(num)) {
+          cleanMap[b] = num;
+        }
+      });
+
+      setHotelForm(hPrev => ({
+        ...hPrev,
+        openingBankBalance: sum,
+        bankOpeningBalances: Object.keys(cleanMap).length > 0 ? JSON.stringify(cleanMap) : ''
+      }));
+
+      return updated;
+    });
+  };
+
+  const handleRemoveBank = (bankName) => {
+    setBankBalancesState(prev => {
+      const updated = { ...prev };
+      delete updated[bankName];
+
+      let sum = 0;
+      const cleanMap = {};
+      Object.entries(updated).forEach(([b, v]) => {
+        const num = parseFloat(v);
+        if (!isNaN(num) && num > 0) {
+          cleanMap[b] = num;
+          sum += num;
+        } else if (!isNaN(num)) {
+          cleanMap[b] = num;
+        }
+      });
+
+      const updatedOnlineBanks = (hotelForm.onlinePaymentBanks || '')
+        .split(',')
+        .map(b => b.trim())
+        .filter(b => b && b.toLowerCase() !== bankName.toLowerCase())
+        .join(', ');
+
+      setHotelForm(hPrev => ({
+        ...hPrev,
+        onlinePaymentBanks: updatedOnlineBanks,
+        openingBankBalance: sum,
+        bankOpeningBalances: Object.keys(cleanMap).length > 0 ? JSON.stringify(cleanMap) : ''
+      }));
+
+      return updated;
+    });
+  };
+
+  const handleAddCustomBank = () => {
+    const trimmed = (customBankName || '').trim();
+    if (!trimmed) return;
+
+    setBankBalancesState(prev => ({
+      ...prev,
+      [trimmed]: prev[trimmed] !== undefined ? prev[trimmed] : ''
+    }));
+
+    const currentBanks = (hotelForm.onlinePaymentBanks || '')
+      .split(',')
+      .map(b => b.trim())
+      .filter(Boolean);
+    if (!currentBanks.some(b => b.toLowerCase() === trimmed.toLowerCase())) {
+      const updatedOnline = currentBanks.length > 0
+        ? `${hotelForm.onlinePaymentBanks}, ${trimmed}`
+        : trimmed;
+      setHotelForm(hPrev => ({
+        ...hPrev,
+        onlinePaymentBanks: updatedOnline
+      }));
+    }
+
+    setCustomBankName('');
+    setShowAddCustomBank(false);
+  };
+
+  const handleLoadDefaultBanks = () => {
+    const defaultBanks = ['Paytm', 'Google Pay', 'SBI Bank', 'HDFC Bank', 'ICICI Bank'];
+    setBankBalancesState(prev => {
+      const nextState = { ...prev };
+      defaultBanks.forEach(b => {
+        if (nextState[b] === undefined) {
+          nextState[b] = '';
+        }
+      });
+      return nextState;
+    });
+
+    const currentBanks = (hotelForm.onlinePaymentBanks || '')
+      .split(',')
+      .map(b => b.trim())
+      .filter(Boolean);
+    const combined = Array.from(new Set([...currentBanks, ...defaultBanks])).join(', ');
+    setHotelForm(prev => ({
+      ...prev,
+      onlinePaymentBanks: combined
+    }));
   };
 
   const handleFormSubmit = async (e) => {
@@ -311,9 +470,16 @@ const AddHotel = () => {
 
     setSubmitting(true);
     try {
+      const payload = {
+        ...hotelForm,
+        openingCashBalance: Number(hotelForm.openingCashBalance || 0),
+        openingBankBalance: Number(hotelForm.openingBankBalance || 0),
+        bankOpeningBalances: hotelForm.bankOpeningBalances || null
+      };
+
       if (isEditMode) {
         // 1. Update Hotel Profile
-        await api.put(`/hotels/${id}`, hotelForm);
+        await api.put(`/hotels/${id}`, payload);
 
         // Update activeHotel in localStorage if this is the active workspace
         const storedHotel = localStorage.getItem('activeHotel');
@@ -322,7 +488,7 @@ const AddHotel = () => {
           if (activeHotelObj.id === id) {
             localStorage.setItem('activeHotel', JSON.stringify({
               ...activeHotelObj,
-              ...hotelForm
+              ...payload
             }));
           }
         }
@@ -361,7 +527,7 @@ const AddHotel = () => {
 
       } else {
         // Create Mode
-        const hotelRes = await api.post('/hotels', hotelForm);
+        const hotelRes = await api.post('/hotels', payload);
         if (hotelRes.data.success) {
           const createdHotel = hotelRes.data.data;
 
@@ -955,25 +1121,152 @@ const AddHotel = () => {
                   <div className="grid grid-cols-2 gap-2.5">
                     <div>
                       <label className="text-[9px] font-extrabold text-[#4A5E38] uppercase tracking-wider block mb-1">Cash Opening (₹)</label>
-                      <input
-                        type="number"
-                        step="any"
-                        value={hotelForm.openingCashBalance}
-                        onChange={(e) => setHotelForm(prev => ({ ...prev, openingCashBalance: e.target.value }))}
-                        className="w-full px-2.5 py-1.5 bg-white border border-[#DDE5D0] rounded-xl text-xs font-bold text-[#1A2E05] focus:outline-none focus:border-[#84A63C]"
-                        placeholder="0.00"
-                      />
+                      <div className="relative">
+                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-[#7A8A6A]">₹</span>
+                        <input
+                          type="number"
+                          step="any"
+                          value={hotelForm.openingCashBalance}
+                          onChange={(e) => setHotelForm(prev => ({ ...prev, openingCashBalance: e.target.value }))}
+                          className="w-full pl-6 pr-2.5 py-1.5 bg-white border border-[#DDE5D0] rounded-xl text-xs font-bold text-[#1A2E05] focus:outline-none focus:border-[#84A63C]"
+                          placeholder="0.00"
+                        />
+                      </div>
                     </div>
                     <div>
-                      <label className="text-[9px] font-extrabold text-[#4A5E38] uppercase tracking-wider block mb-1">Bank Opening (₹)</label>
-                      <input
-                        type="number"
-                        step="any"
-                        value={hotelForm.openingBankBalance}
-                        onChange={(e) => setHotelForm(prev => ({ ...prev, openingBankBalance: e.target.value }))}
-                        className="w-full px-2.5 py-1.5 bg-white border border-[#DDE5D0] rounded-xl text-xs font-bold text-[#1A2E05] focus:outline-none focus:border-[#84A63C]"
-                        placeholder="0.00"
-                      />
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[9px] font-extrabold text-[#4A5E38] uppercase tracking-wider block">Bank Opening (₹)</label>
+                        {activeBankList.length > 0 && (
+                          <span className="text-[8px] font-extrabold text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                            Total
+                          </span>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-bold text-[#7A8A6A]">₹</span>
+                        <input
+                          type="number"
+                          step="any"
+                          value={hotelForm.openingBankBalance}
+                          onChange={(e) => setHotelForm(prev => ({ ...prev, openingBankBalance: e.target.value }))}
+                          className="w-full pl-6 pr-2.5 py-1.5 bg-white border border-[#DDE5D0] rounded-xl text-xs font-bold text-[#1A2E05] focus:outline-none focus:border-[#84A63C]"
+                          placeholder="0.00"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Bank-wise Starting Balances */}
+                  <div className="bg-[#F4F7EE]/80 rounded-xl p-3 border border-[#DDE5D0] space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <Landmark size={13} className="text-[#4A5E38]" />
+                        <span className="text-[10px] font-black text-[#1A2E05] uppercase tracking-wider">
+                          Bank & Online Accounts Breakdown
+                        </span>
+                      </div>
+                      <span className="text-[9px] font-extrabold text-[#4A5E38] bg-white px-2 py-0.5 rounded-full border border-[#DDE5D0] shadow-2xs">
+                        {activeBankList.length} {activeBankList.length === 1 ? 'account' : 'accounts'}
+                      </span>
+                    </div>
+
+                    <p className="text-[9.5px] text-[#7A8A6A] font-semibold leading-tight">
+                      Specify starting balance for each bank account. Totals update automatically above.
+                    </p>
+
+                    {activeBankList.length === 0 ? (
+                      <div className="bg-white rounded-xl p-3 text-center border border-dashed border-[#DDE5D0] space-y-2">
+                        <p className="text-xs font-medium text-[#7A8A6A]">No bank accounts configured yet.</p>
+                        <button
+                          type="button"
+                          onClick={handleLoadDefaultBanks}
+                          className="inline-flex items-center gap-1 text-[11px] font-bold text-[#84A63C] hover:underline"
+                        >
+                          <Plus size={11} /> Load common banks (Paytm, GPay, SBI, HDFC, ICICI)
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5 max-h-[220px] overflow-y-auto pr-1">
+                        {activeBankList.map(bank => {
+                          const val = bankBalancesState[bank] !== undefined ? bankBalancesState[bank] : '';
+                          return (
+                            <div
+                              key={bank}
+                              className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-[#DDE5D0] shadow-2xs hover:border-[#84A63C]/50 transition-all"
+                            >
+                              <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                                <div className="w-1.5 h-1.5 rounded-full bg-[#84A63C] shrink-0" />
+                                <span className="text-xs font-bold text-[#1A2E05] truncate" title={bank}>
+                                  {bank}
+                                </span>
+                              </div>
+                              <div className="relative w-28 sm:w-32 shrink-0">
+                                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-black text-[#7A8A6A]">₹</span>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  value={val}
+                                  onChange={(e) => handleBankBalanceChange(bank, e.target.value)}
+                                  placeholder="0.00"
+                                  className="w-full pl-6 pr-2 py-1 bg-[#FBFDF8] border border-[#DDE5D0] rounded-lg text-xs font-bold text-[#1A2E05] focus:bg-white focus:outline-none focus:border-[#84A63C] text-right"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveBank(bank)}
+                                className="text-[#A5B595] hover:text-rose-600 p-1 transition-colors shrink-0"
+                                title={`Remove ${bank}`}
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Add new bank account row */}
+                    <div className="pt-0.5">
+                      {showAddCustomBank ? (
+                        <div className="flex items-center gap-1.5 bg-white p-2 rounded-xl border border-[#84A63C]/70 shadow-2xs animate-fade-in">
+                          <input
+                            type="text"
+                            value={customBankName}
+                            onChange={(e) => setCustomBankName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                handleAddCustomBank();
+                              }
+                            }}
+                            placeholder="e.g. Bank of Baroda, Axis, PhonePe"
+                            className="flex-1 px-2.5 py-1 text-xs border border-[#DDE5D0] rounded-lg font-bold text-[#1A2E05] focus:outline-none focus:border-[#84A63C]"
+                            autoFocus
+                          />
+                          <button
+                            type="button"
+                            onClick={handleAddCustomBank}
+                            className="px-3 py-1 bg-[#84A63C] text-white rounded-lg text-xs font-bold hover:bg-[#729231] transition-colors shrink-0"
+                          >
+                            Add
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setShowAddCustomBank(false); setCustomBankName(''); }}
+                            className="px-2 py-1 text-[#7A8A6A] hover:text-[#1A2E05] text-xs font-bold shrink-0"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setShowAddCustomBank(true)}
+                          className="inline-flex items-center gap-1 text-[11px] font-extrabold text-[#4A5E38] hover:text-[#84A63C] transition-colors py-0.5"
+                        >
+                          <Plus size={13} /> Add another bank / account
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -1055,6 +1348,13 @@ const AddHotel = () => {
                   description="Allow receptionists to edit or delete past/old payment transactions recorded on previous dates. When disabled, only today's payments can be edited."
                   checked={hotelForm.allowEditOldPayments}
                   onChange={(val) => setHotelForm(prev => ({ ...prev, allowEditOldPayments: val }))}
+                />
+
+                <ToggleCard
+                  label="Enable Payment Serial Number"
+                  description="Automatically generate and assign a sequential payment serial number (1, 2, 3...) for every money collection/transaction, and display it in Accounts and Billing."
+                  checked={hotelForm.enablePaymentSerialNumber}
+                  onChange={(val) => setHotelForm(prev => ({ ...prev, enablePaymentSerialNumber: val }))}
                 />
               </div>
             </div>
